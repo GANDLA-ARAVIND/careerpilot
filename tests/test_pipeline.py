@@ -160,61 +160,81 @@ def test_fetch_all_without_on_progress_behaves_exactly_as_before(monkeypatch, fa
 
 # ---------------------------------------------------------------------------
 # fetch_all - Cadence.WEEKLY: skip when not due, fetch when due, --force,
-# and no-session-means-cadence-disabled (same convention as on_progress=None
-# on this same function)
+# and no-engine-means-cadence-disabled (same convention as on_progress=None
+# on this same function). Plus the session-lifetime regression a real
+# GitHub Actions run found - see the section after these.
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def db_session():
+def db_engine():
     """A real in-memory DB - cadence needs an actual company_fetch_state
     table to read/write, not a fake. Same get_engine(':memory:') convention
-    tests/test_db.py already uses."""
-    engine = get_engine(":memory:")
-    with Session(engine) as session:
-        yield session
+    tests/test_db.py already uses.
+
+    An Engine rather than a Session because that is what fetch_all now
+    takes: it opens its own short sessions and holds none across the fetch
+    loop. :memory: uses SingletonThreadPool, so every session opened on
+    this engine in this thread sees the same database."""
+    yield get_engine(":memory:")
 
 
 def _weekly_company(name: str = "Cisco") -> CompanyConfig:
     return CompanyConfig(name=name, ats=ATSSource.GREENHOUSE, token="cisco", cadence=Cadence.WEEKLY)
 
 
-def test_fetch_all_ignores_cadence_entirely_without_a_session(monkeypatch, fake_fetchers):
-    """session=None disables Cadence.WEEKLY altogether, the same "None means
-    old behavior" convention on_progress already has on this function - a
-    weekly company with no session passed is fetched every call, same as a
-    nightly one."""
-    calls, make_fetch = fake_fetchers
-    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})})
+def _record(engine, company: str, when=None) -> None:
+    with Session(engine) as session:
+        record_fetch(session, company, when=when)
+        session.commit()
 
-    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()])  # no session
+
+def _last_fetched(engine, company: str):
+    with Session(engine) as session:
+        return get_last_fetched_at(session, company)
+
+
+def test_fetch_all_ignores_cadence_entirely_without_an_engine(monkeypatch, fake_fetchers):
+    """engine=None disables Cadence.WEEKLY altogether, the same "None means
+    old behavior" convention on_progress already has on this function - a
+    weekly company with no engine passed is fetched every call, same as a
+    nightly one, and nothing touches the database."""
+    calls, make_fetch = fake_fetchers
+    monkeypatch.setattr(
+        pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})}
+    )
+
+    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()])  # no engine
 
     assert len(jobs) == 1
     assert skipped == []
     assert calls == ["Cisco"]
 
 
-def test_fetch_all_fetches_a_weekly_company_with_no_recorded_fetch_yet(monkeypatch, fake_fetchers, db_session):
+def test_fetch_all_fetches_a_weekly_company_with_no_recorded_fetch_yet(monkeypatch, fake_fetchers, db_engine):
     """A brand-new weekly company (never successfully fetched) is due on
     its first run, same as any new companies.yaml entry - the skip only
     ever applies once there's a real last-fetched time to compare against."""
     calls, make_fetch = fake_fetchers
-    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})})
+    monkeypatch.setattr(
+        pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})}
+    )
 
-    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], session=db_session)
+    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], engine=db_engine)
 
     assert len(jobs) == 1
     assert skipped == []
     assert calls == ["Cisco"]
 
 
-def test_fetch_all_skips_a_weekly_company_fetched_recently(monkeypatch, fake_fetchers, db_session):
+def test_fetch_all_skips_a_weekly_company_fetched_recently(monkeypatch, fake_fetchers, db_engine):
     calls, make_fetch = fake_fetchers
-    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})})
-    record_fetch(db_session, "Cisco", when=datetime.now(timezone.utc) - timedelta(days=2))
-    db_session.commit()
+    monkeypatch.setattr(
+        pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})}
+    )
+    _record(db_engine, "Cisco", when=datetime.now(timezone.utc) - timedelta(days=2))
 
-    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], session=db_session)
+    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], engine=db_engine)
 
     assert jobs == []
     assert calls == []  # FETCHERS never called for a company that's skipped
@@ -223,76 +243,163 @@ def test_fetch_all_skips_a_weekly_company_fetched_recently(monkeypatch, fake_fet
     assert "2 day" in skipped[0][1]
 
 
-def test_fetch_all_fetches_a_weekly_company_past_the_cadence_window(monkeypatch, fake_fetchers, db_session):
+def test_fetch_all_fetches_a_weekly_company_past_the_cadence_window(monkeypatch, fake_fetchers, db_engine):
     calls, make_fetch = fake_fetchers
-    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})})
-    record_fetch(db_session, "Cisco", when=datetime.now(timezone.utc) - timedelta(days=8))
-    db_session.commit()
+    monkeypatch.setattr(
+        pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})}
+    )
+    _record(db_engine, "Cisco", when=datetime.now(timezone.utc) - timedelta(days=8))
 
-    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], session=db_session)
+    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], engine=db_engine)
 
     assert len(jobs) == 1
     assert skipped == []
     assert calls == ["Cisco"]
 
 
-def test_fetch_all_force_fetches_a_weekly_company_not_due_and_still_records_it(monkeypatch, fake_fetchers, db_session):
+def test_fetch_all_force_fetches_a_weekly_company_not_due_and_still_records_it(monkeypatch, fake_fetchers, db_engine):
     """force=True bypasses the skip, but the fetch is still recorded - a
     forced run resets the weekly clock rather than leaving it stuck on the
     old timestamp forever."""
     calls, make_fetch = fake_fetchers
-    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})})
-    record_fetch(db_session, "Cisco", when=datetime.now(timezone.utc) - timedelta(hours=1))
-    db_session.commit()
+    monkeypatch.setattr(
+        pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})}
+    )
+    _record(db_engine, "Cisco", when=datetime.now(timezone.utc) - timedelta(hours=1))
 
-    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], session=db_session, force=True)
+    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], engine=db_engine, force=True)
 
     assert len(jobs) == 1
     assert skipped == []
-    last_fetched = get_last_fetched_at(db_session, "Cisco")
-    assert (datetime.now(timezone.utc).replace(tzinfo=None) - last_fetched) < timedelta(minutes=1)
+    assert (datetime.now(timezone.utc).replace(tzinfo=None) - _last_fetched(db_engine, "Cisco")) < timedelta(minutes=1)
 
 
-def test_fetch_all_records_a_successful_fetch_for_the_next_call_to_check(monkeypatch, fake_fetchers, db_session):
+def test_fetch_all_records_a_successful_fetch_for_the_next_call_to_check(monkeypatch, fake_fetchers, db_engine):
     calls, make_fetch = fake_fetchers
-    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})})
-    assert get_last_fetched_at(db_session, "Cisco") is None
+    monkeypatch.setattr(
+        pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})}
+    )
+    assert _last_fetched(db_engine, "Cisco") is None
 
-    pipeline.fetch_all([_weekly_company()], session=db_session)
+    pipeline.fetch_all([_weekly_company()], engine=db_engine)
 
-    assert get_last_fetched_at(db_session, "Cisco") is not None
+    assert _last_fetched(db_engine, "Cisco") is not None
 
 
-def test_fetch_all_does_not_record_a_failed_fetch(monkeypatch, fake_fetchers, db_session):
+def test_fetch_all_does_not_record_a_failed_fetch(monkeypatch, fake_fetchers, db_engine):
     """A company whose fetch raised BoardNotFoundError should be retried
     next run, not treated as freshly fetched and skipped - see
     db.record_fetch's docstring."""
     calls, make_fetch = fake_fetchers
     monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({})})  # every company fails
 
-    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], session=db_session)
+    jobs, failures, skipped = pipeline.fetch_all([_weekly_company()], engine=db_engine)
 
     assert len(failures) == 1
-    assert get_last_fetched_at(db_session, "Cisco") is None
+    assert _last_fetched(db_engine, "Cisco") is None
 
 
-def test_fetch_all_skip_event_extra_marks_skipped_distinctly(monkeypatch, fake_fetchers, db_session):
+def test_fetch_all_skip_event_extra_marks_skipped_distinctly(monkeypatch, fake_fetchers, db_engine):
     """A skip is neither a success nor a failure - its ProgressEvent.extra
     shouldn't carry jobs_found/error keys that would make a UI mistake it
     for either."""
     calls, make_fetch = fake_fetchers
-    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})})
-    record_fetch(db_session, "Cisco", when=datetime.now(timezone.utc) - timedelta(days=1))
-    db_session.commit()
+    monkeypatch.setattr(
+        pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch({"Cisco": [_make_posting(company="Cisco")]})}
+    )
+    _record(db_engine, "Cisco", when=datetime.now(timezone.utc) - timedelta(days=1))
     recorder = _RecordingCallback()
 
-    pipeline.fetch_all([_weekly_company()], on_progress=recorder, session=db_session)
+    pipeline.fetch_all([_weekly_company()], on_progress=recorder, engine=db_engine)
 
     per_company = [e for e in recorder.events if e.current is not None]
     assert len(per_company) == 1
     assert per_company[0].extra["skipped"] is True
     assert "jobs_found" not in per_company[0].extra
     assert "error" not in per_company[0].extra
+
+
+# ---------------------------------------------------------------------------
+# The regression a real GitHub Actions run found: fetch_all must not hold a
+# database transaction open across the fetch loop. It did, and 40+ minutes
+# of Workday fetching later Neon killed the connection with "terminating
+# connection due to idle-in-transaction timeout". LangGraph then retried the
+# node, producing a second complete fetch of all 67 companies.
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_all_holds_no_session_open_across_the_fetch_loop(monkeypatch, fake_fetchers, db_engine):
+    """The core invariant: every database access happens strictly BEFORE or
+    strictly AFTER the fetching, never interleaved with it.
+
+    Asserted on ordering rather than on connection-pool internals, because
+    ordering is the property that actually matters and it reads the same on
+    SQLite and Postgres. A version that opened a session per company inside
+    the loop could still pass a naive "is a connection checked out between
+    companies" check, but would fail this."""
+    events: list[str] = []
+
+    def tracking_fetch(company: CompanyConfig) -> list[JobPosting]:
+        events.append("fetch:" + company.name)
+        return [_make_posting(company=company.name)]
+
+    real_read = pipeline.get_last_fetched_map
+    real_write = pipeline.record_fetch
+
+    def tracked_read(session, names):
+        events.append("db_read")
+        return real_read(session, names)
+
+    def tracked_write(session, company, when=None):
+        events.append("db_write:" + company)
+        return real_write(session, company, when=when)
+
+    monkeypatch.setattr(pipeline, "get_last_fetched_map", tracked_read)
+    monkeypatch.setattr(pipeline, "record_fetch", tracked_write)
+    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: tracking_fetch})
+
+    pipeline.fetch_all([_weekly_company("Cisco"), _weekly_company("Adobe")], engine=db_engine)
+
+    reads = [i for i, e in enumerate(events) if e == "db_read"]
+    fetches = [i for i, e in enumerate(events) if e.startswith("fetch:")]
+    writes = [i for i, e in enumerate(events) if e.startswith("db_write:")]
+
+    assert reads and fetches and writes
+    assert max(reads) < min(fetches), "a database read happened during or after fetching: " + str(events)
+    assert min(writes) > max(fetches), "a database write happened before fetching finished: " + str(events)
+
+
+def test_fetch_all_reads_cadence_state_in_one_query_not_one_per_company(monkeypatch, fake_fetchers, db_engine):
+    """67 companies must cost one round trip, not 67. Beyond efficiency,
+    this is what keeps the read phase short enough to be a real
+    open-read-close rather than a slow crawl holding a transaction."""
+    calls, make_fetch = fake_fetchers
+    read_count = 0
+    real_read = pipeline.get_last_fetched_map
+
+    def counting_read(session, names):
+        nonlocal read_count
+        read_count += 1
+        return real_read(session, names)
+
+    monkeypatch.setattr(pipeline, "get_last_fetched_map", counting_read)
+    jobs_by_company = {name: [_make_posting(company=name)] for name in ("Cisco", "Adobe", "Intel")}
+    monkeypatch.setattr(pipeline, "FETCHERS", {ATSSource.GREENHOUSE: make_fetch(jobs_by_company)})
+
+    pipeline.fetch_all([_weekly_company(n) for n in jobs_by_company], engine=db_engine)
+
+    assert read_count == 1
+
+
+def test_is_due_cannot_touch_the_database():
+    """_is_due takes a plain mapping, not a Session - the signature is the
+    guard. If it ever grows a Session parameter again, the per-company
+    query that caused the outage becomes expressible again."""
+    import inspect
+
+    params = inspect.signature(pipeline._is_due).parameters
+    assert "session" not in params
+    assert "Session" not in str(params["last_fetched_by_company"].annotation)
 
 
 # ---------------------------------------------------------------------------

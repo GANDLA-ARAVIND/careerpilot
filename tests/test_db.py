@@ -11,6 +11,7 @@ from db import (
     database_url,
     get_engine,
     get_last_fetched_at,
+    get_last_fetched_map,
     is_postgres,
     last_successful_run,
     record_fetch,
@@ -519,3 +520,49 @@ def test_last_successful_run_ignores_running_and_failed_runs(session):
     _add_run(session, "failed", "failed", datetime(2026, 8, 20, 2, 0), datetime(2026, 8, 20, 2, 5))
 
     assert last_successful_run(session) == datetime(2026, 8, 17, 2, 20)
+
+
+def test_get_last_fetched_map_returns_only_recorded_companies(session):
+    """Companies with no recorded fetch are absent, not present-with-None -
+    pipeline._is_due treats a missing key as 'never fetched, therefore
+    due', so the two must not be conflated."""
+    record_fetch(session, "Cisco", when=datetime(2026, 8, 12, 2, 0))
+    session.commit()
+
+    result = get_last_fetched_map(session, ["Cisco", "Adobe", "Intel"])
+
+    assert result == {"Cisco": datetime(2026, 8, 12, 2, 0)}
+    assert "Adobe" not in result
+
+
+def test_get_last_fetched_map_handles_an_empty_company_list(session):
+    """fetch_all calls this before it knows anything; an empty
+    companies.yaml must not produce a malformed IN () query."""
+    assert get_last_fetched_map(session, []) == {}
+
+
+def test_get_last_fetched_map_reads_every_company_in_one_query(session):
+    """The whole point: 67 companies cost one round trip, not 67. Counted
+    via SQLAlchemy's cursor-execute event rather than asserted by
+    inspection, so it stays true if the implementation changes."""
+    from sqlalchemy import event
+
+    for name in ("Cisco", "Adobe", "Intel"):
+        record_fetch(session, name)
+    session.commit()
+
+    statements = []
+
+    def before_execute(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", before_execute)
+    try:
+        result = get_last_fetched_map(session, ["Cisco", "Adobe", "Intel"])
+    finally:
+        event.remove(engine, "before_cursor_execute", before_execute)
+
+    assert len(result) == 3
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 1, selects

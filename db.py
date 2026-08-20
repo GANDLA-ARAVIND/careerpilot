@@ -270,6 +270,26 @@ def get_last_fetched_at(session: Session, company: str) -> Optional[datetime]:
     return row.last_fetched_at if row is not None else None
 
 
+def get_last_fetched_map(session: Session, companies: Iterable[str]) -> dict[str, datetime]:
+    """Every recorded last-fetch time for `companies`, in ONE query.
+
+    Exists so pipeline.fetch_all can read the whole cadence picture in a
+    single short transaction before it starts fetching, rather than
+    querying per company inside the fetch loop. That loop runs for 40+
+    minutes when the large Workday tenants are due, and a transaction left
+    open across it is terminated by Neon's idle-in-transaction timeout -
+    which is exactly how this was found, in a real GitHub Actions run. See
+    docs/decisions.md.
+
+    Companies with no recorded fetch are simply absent from the returned
+    dict; callers treat a missing key as "never fetched, therefore due"."""
+    names = list(companies)
+    if not names:
+        return {}
+    rows = session.query(CompanyFetchStateRow).filter(CompanyFetchStateRow.company.in_(names)).all()
+    return {row.company: row.last_fetched_at for row in rows}
+
+
 def record_fetch(session: Session, company: str, when: Optional[datetime] = None) -> None:
     """Upsert - a plain select-then-write like upsert_job, not SQL-level
     ON CONFLICT, for the same reason: one local process, no concurrent-

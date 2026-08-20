@@ -45,6 +45,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import RetryPolicy
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from agents.analyst import is_unscored
@@ -94,15 +95,12 @@ def fetch_persist_filter(state: PipelineState, on_progress: Optional[ProgressCal
     companies = load_companies()
     print(f"Fetching jobs for {len(companies)} companies...")
 
-    # A real session, not the None every fetch_all() test uses - this is
-    # what makes Cadence.WEEKLY (see models.py) actually take effect on the
-    # scheduled nightly path, not just pipeline.py's CLI. Opened and closed
-    # around fetch_all alone, same short-lived-session shape as every other
-    # DB access in this module, rather than held open across persist_jobs'
-    # own separate session below.
-    engine = get_engine()
-    with Session(engine) as session:
-        jobs, failures, skipped = fetch_all(companies, on_progress=on_progress, session=session)
+    # An engine, deliberately not an open Session. fetch_all opens its own
+    # short sessions around the fetch loop and holds none across it - see
+    # its docstring for the idle-in-transaction timeout that made this
+    # non-negotiable. Passing a live Session here is what caused a real
+    # nightly run to be killed by Neon after 44 minutes.
+    jobs, failures, skipped = fetch_all(companies, on_progress=on_progress, engine=get_engine())
 
     if failures:
         print(f"FAILURES ({len(failures)}):")
@@ -193,6 +191,42 @@ def route_after_stage1(state: PipelineState) -> str:
 # ---------------------------------------------------------------------------
 
 
+# LangGraph's own default predicate, read off RetryPolicy rather than
+# imported from langgraph._internal._retry - it lives in a private module
+# whose path has already moved between versions, and the default of a
+# public class is the stable way to reach it.
+_LANGGRAPH_DEFAULT_RETRY_ON = RetryPolicy().retry_on
+
+
+def _retry_fetch_on(exc: Exception) -> bool:
+    """Retry predicate for the fetch node specifically.
+
+    Retrying this node is not cheap the way retrying stage1/stage2 is: it
+    re-issues every ATS request for every company, thousands of them when
+    the large Workday tenants are due, against other people's
+    infrastructure. LangGraph's default predicate returns True for anything
+    it does not explicitly exclude - which includes psycopg's
+    OperationalError, verified directly. That is how one Neon
+    idle-in-transaction kill turned into a complete second fetch of all 67
+    companies in a real run: the log showed "Fetching jobs for 67
+    companies..." twice.
+
+    So: never retry a database error here. A DB failure is either
+    configuration (which a retry cannot fix) or connection-level (which the
+    engine's pool_pre_ping already handles at a much lower level, without
+    redoing the network work). The node already survives per-company
+    adapter failures internally by collecting them into `failures` rather
+    than raising, so a retry is not what protects against a flaky board
+    either - it is reserved for a genuinely unexpected in-process error
+    during the cheap persist/filter phase.
+
+    The run stays recoverable regardless: state is checkpointed in
+    Postgres, so a failed run resumes rather than restarting."""
+    if isinstance(exc, SQLAlchemyError) or type(exc).__module__.split(".")[0] == "psycopg":
+        return False
+    return _LANGGRAPH_DEFAULT_RETRY_ON(exc)
+
+
 def build_graph(on_progress: Optional[ProgressCallback] = None) -> StateGraph:
     """on_progress: forwarded into every node via a closure, not by
     registering the node functions directly - LangGraph calls a node with
@@ -223,7 +257,9 @@ def build_graph(on_progress: Optional[ProgressCallback] = None) -> StateGraph:
     # retry_on (verified live) retries our own ATSAdapterError/LLMError but
     # not plain bugs (TypeError/ValueError/...), which is exactly right -
     # no custom retry_on needed.
-    graph.add_node("fetch_persist_filter", _fetch_persist_filter, retry_policy=RetryPolicy(max_attempts=3))
+    graph.add_node(
+        "fetch_persist_filter", _fetch_persist_filter, retry_policy=RetryPolicy(max_attempts=3, retry_on=_retry_fetch_on)
+    )
     graph.add_node("stage1_analyze", _stage1_analyze, retry_policy=RetryPolicy(max_attempts=2))
     graph.add_node("stage2_analyze", _stage2_analyze, retry_policy=RetryPolicy(max_attempts=2))
 

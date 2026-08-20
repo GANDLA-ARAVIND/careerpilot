@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from adapters.ashby import fetch_jobs as fetch_ashby
@@ -30,7 +31,7 @@ from config import (
     STAGE2_TOP_N,
     load_companies,
 )
-from db import JobPostingRow, get_engine, get_last_fetched_at, job_posting_from_row, record_fetch, upsert_jobs
+from db import JobPostingRow, get_engine, get_last_fetched_map, job_posting_from_row, record_fetch, upsert_jobs
 from filters import filter_jobs, parse_max_experience_years, reject_reason, rejected_jobs
 from llm import GeminiClient
 from models import ATSSource, Cadence, CompanyConfig, JobPosting, RemoteType
@@ -116,16 +117,27 @@ def _emit(on_progress: Optional[ProgressCallback], event: ProgressEvent) -> None
         pass
 
 
-def _is_due(session: Optional[Session], company: CompanyConfig, force: bool) -> tuple[bool, Optional[int]]:
+def _is_due(
+    last_fetched_by_company: Optional[dict[str, datetime]], company: CompanyConfig, force: bool
+) -> tuple[bool, Optional[int]]:
     """Whether `company` should be fetched this call, and (if not) how many
     days it's been since its last successful fetch - for the skip message.
-    Always due with no session (cadence disabled - see fetch_all's
-    docstring), when forced, or when nightly (the default). A WEEKLY
-    company with no recorded fetch yet is due on its first run, same as
-    any brand-new companies.yaml entry."""
-    if session is None or force or company.cadence == Cadence.NIGHTLY:
+
+    Pure: it takes an already-read mapping, never a Session, and so cannot
+    issue a query. That is the point, not an incidental detail. When this
+    took a Session it ran a SELECT per company from inside fetch_all's
+    loop, which held a transaction open across 40+ minutes of HTTP work and
+    was killed by Neon's idle-in-transaction timeout in a real GitHub
+    Actions run. A signature that cannot touch the database cannot
+    reintroduce that. See docs/decisions.md.
+
+    None (cadence disabled - see fetch_all's docstring), force, or NIGHTLY
+    means always due. A WEEKLY company absent from the mapping has never
+    been fetched, so it is due on its first run, same as any brand-new
+    companies.yaml entry."""
+    if last_fetched_by_company is None or force or company.cadence == Cadence.NIGHTLY:
         return True, None
-    last_fetched = get_last_fetched_at(session, company.name)
+    last_fetched = last_fetched_by_company.get(company.name)
     if last_fetched is None:
         return True, None
     days_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last_fetched).days
@@ -135,7 +147,7 @@ def _is_due(session: Optional[Session], company: CompanyConfig, force: bool) -> 
 def fetch_all(
     companies: list[CompanyConfig],
     on_progress: Optional[ProgressCallback] = None,
-    session: Optional[Session] = None,
+    engine: Optional[Engine] = None,
     force: bool = False,
 ) -> tuple[list[JobPosting], list[tuple[CompanyConfig, str]], list[tuple[CompanyConfig, str]]]:
     """Fetch every company in turn. One company's failure must not stop the
@@ -144,14 +156,31 @@ def fetch_all(
     exist (a config error); anything else is an unexpected adapter or network
     failure. Both are recorded against the company and skipped, not raised.
 
-    session=None (the default) disables Cadence.WEEKLY entirely - every
-    company is fetched every call, exactly the old behavior. That's what
-    every caller that predates this parameter (including every existing
-    test) keeps getting without any change on their part - the same "None
-    means old behavior" convention on_progress already uses on this same
-    function. A real caller passes an open session so WEEKLY companies
-    actually get skipped when not due, and so successful fetches get
-    recorded for the next call to check against.
+    Takes an Engine, never a Session, and opens its own SHORT sessions
+    around the fetch loop rather than holding one across it:
+
+        1. one short session reads every company's last-fetch time at once
+        2. the loop runs with no database connection held at all
+        3. one short session records the successful fetches
+
+    That shape is load-bearing, not stylistic. An earlier version took an
+    open Session, and the first `_is_due` query started a transaction that
+    then stayed open across the whole loop - 40+ minutes when the large
+    Workday tenants are due. Neon terminates idle-in-transaction
+    connections, so a real GitHub Actions run died with
+    `psycopg.OperationalError: terminating connection due to
+    idle-in-transaction timeout`, which LangGraph's retry policy then
+    turned into a second complete fetch of all 67 companies. SQLite has no
+    such timeout, which is why it never appeared locally. Accepting an
+    Engine rather than a Session means the long-open-transaction bug is no
+    longer expressible here. See docs/decisions.md.
+
+    engine=None (the default) disables Cadence.WEEKLY entirely - every
+    company is fetched every call, and nothing touches the database. That's
+    what every caller predating cadence keeps getting for free, the same
+    "None means old behavior" convention on_progress already uses on this
+    function. A real caller passes an engine so WEEKLY companies are
+    skipped when not due and successful fetches are recorded.
 
     force=True fetches every company regardless of cadence, but still
     records the fetch afterward - a forced run resets the weekly clock,
@@ -163,11 +192,20 @@ def fetch_all(
     jobs: list[JobPosting] = []
     failures: list[tuple[CompanyConfig, str]] = []
     skipped: list[tuple[CompanyConfig, str]] = []
+    fetched_ok: list[str] = []
+
+    # Phase 1: read the whole cadence picture in one short transaction,
+    # then let it close before any network work starts.
+    last_fetched_by_company: Optional[dict[str, datetime]] = None
+    if engine is not None:
+        with Session(engine) as session:
+            last_fetched_by_company = get_last_fetched_map(session, [c.name for c in companies])
 
     _emit(on_progress, ProgressEvent(stage="fetch", message=f"Fetching from {len(companies)} companies...", total=len(companies)))
 
+    # Phase 2: the long part. No session is open anywhere in this loop.
     for i, company in enumerate(companies, start=1):
-        due, days_since = _is_due(session, company, force)
+        due, days_since = _is_due(last_fetched_by_company, company, force)
         if not due:
             reason = f"weekly cadence, last fetched {days_since} day(s) ago"
             skipped.append((company, reason))
@@ -218,12 +256,16 @@ def fetch_all(
 
         print(f"  {company.name} ({company.ats.value}): {len(company_jobs)} jobs")
         jobs.extend(company_jobs)
+        fetched_ok.append(company.name)
 
-        if session is not None:
-            record_fetch(session, company.name)
-
-    if session is not None:
-        session.commit()
+    # Phase 3: one short session to record what succeeded. Only companies
+    # whose fetch actually worked - a failed one must be retried next run,
+    # not treated as freshly fetched and skipped for a week.
+    if engine is not None and fetched_ok:
+        with Session(engine) as session:
+            for name in fetched_ok:
+                record_fetch(session, name)
+            session.commit()
 
     return jobs, failures, skipped
 
@@ -818,12 +860,12 @@ if __name__ == "__main__":
         print(f"Fetching jobs for {len(companies)} companies...")
         print()
 
-        # A real session, unlike every fetch_all() call in the test suite -
-        # this is the one call site where Cadence.WEEKLY actually takes
-        # effect (see fetch_all's docstring: session=None disables it).
-        engine = get_engine()
-        with Session(engine) as session:
-            jobs, failures, skipped = fetch_all(companies, session=session, force=args.force)
+        # A real engine, unlike every fetch_all() call in the test suite -
+        # this is the one CLI call site where Cadence.WEEKLY actually takes
+        # effect (see fetch_all's docstring: engine=None disables it).
+        # fetch_all opens its own short sessions; nothing is held open
+        # across the fetch.
+        jobs, failures, skipped = fetch_all(companies, engine=get_engine(), force=args.force)
 
         print_failures(failures)
         print_skipped(skipped)

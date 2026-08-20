@@ -188,3 +188,66 @@ def test_find_resumable_thread_respects_lookback_window(tmp_path):
         assert _find_resumable_thread(app, today, lookback_days=15) == too_old_thread
     finally:
         saver_cm.__exit__(None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# Retry policy on the fetch node. Retrying this node is not cheap the way
+# retrying stage1/stage2 is - it re-issues every ATS request for every
+# company. A real GitHub Actions run proved the cost: one Neon
+# idle-in-transaction kill was retried into a second complete fetch of all
+# 67 companies. See docs/decisions.md.
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_retry_predicate_never_retries_a_database_error():
+    """A DB failure is either configuration (a retry cannot fix it) or
+    connection-level (pool_pre_ping already handles that far more cheaply,
+    without redoing the network work). Either way, re-running 40 minutes of
+    third-party HTTP is the wrong response."""
+    import psycopg
+    from sqlalchemy.exc import OperationalError as SAOperationalError
+
+    assert orchestrator._retry_fetch_on(psycopg.OperationalError("idle-in-transaction timeout")) is False
+    assert orchestrator._retry_fetch_on(SAOperationalError("stmt", {}, Exception())) is False
+
+
+def test_langgraph_default_would_have_retried_that_error():
+    """The reason a custom predicate is needed at all: LangGraph's default
+    returns True for anything it doesn't explicitly exclude, and psycopg's
+    OperationalError is not in the excluded set. Locking this in so the
+    custom predicate isn't quietly deleted as redundant later."""
+    import psycopg
+    from langgraph.types import RetryPolicy
+
+    assert RetryPolicy().retry_on(psycopg.OperationalError("idle-in-transaction timeout")) is True
+
+
+def test_fetch_retry_predicate_still_retries_a_transient_adapter_error():
+    """Narrowing must not disable retries wholesale - a genuinely transient
+    in-process failure during the cheap persist/filter phase is still worth
+    one more attempt."""
+    from adapters.base import ATSAdapterError
+
+    assert orchestrator._retry_fetch_on(ATSAdapterError("transient")) is True
+    assert orchestrator._retry_fetch_on(ConnectionError("reset")) is True
+
+
+def test_fetch_node_uses_the_narrowed_predicate():
+    """The predicate is only useful if it is actually wired to the node."""
+    graph = orchestrator.build_graph()
+    # RetryPolicy is itself a NamedTuple, so it must not be treated as a
+    # sequence of policies - iterating it yields its own fields.
+    policy = graph.nodes["fetch_persist_filter"].retry_policy
+    assert policy is not None
+    assert policy.retry_on is orchestrator._retry_fetch_on
+    assert policy.max_attempts == 3
+
+
+def test_analyst_nodes_keep_the_default_retry_policy():
+    """Only the fetch node is narrowed. stage1/stage2 are cheap to redo and
+    already guard LLM quota internally, so they keep the default."""
+    graph = orchestrator.build_graph()
+    for name in ("stage1_analyze", "stage2_analyze"):
+        policy = graph.nodes[name].retry_policy
+        assert policy.retry_on is not orchestrator._retry_fetch_on
+        assert policy.max_attempts == 2

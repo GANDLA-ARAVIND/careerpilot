@@ -2030,3 +2030,74 @@ its own elapsed time and the first real run replaces the estimate with a fact.
 **Secrets are passed through `env:`, never interpolated into shell.** An earlier draft wrote
 `${{ secrets.X }}` directly inside a `run:` script; rewritten to bind them as step `env` first,
 which is the standard mitigation for script injection through workflow expressions.
+
+## The first real nightly run died at 44 minutes: a session held across the fetch
+
+`psycopg.OperationalError: terminating connection due to idle-in-transaction timeout`, on a
+SELECT against `company_fetch_state` for Cisco, inside `fetch_persist_filter`. Two distinct
+faults, one causing the other.
+
+**Fault 1: `fetch_all` borrowed a live `Session` and held it across 40+ minutes of HTTP.**
+The caller opened a session, `_is_due` issued the first `SELECT` (opening a transaction), and
+that transaction then sat idle while the loop fetched every company - including Cisco and
+Adobe on the week they are due. Neon terminates idle-in-transaction connections. SQLite has
+no such timeout, which is why local runs and the whole test suite were green: the same shape
+of engine-specific gap as the `VARCHAR(300)` location finding, and found the same way - only
+by running against the real thing.
+
+**Fault 2: LangGraph retried the node, doubling the load.** `RetryPolicy(max_attempts=3)` was
+on `fetch_persist_filter`. LangGraph's `default_retry_on` excludes `ValueError`, `OSError`,
+`RuntimeError` and friends and returns `True` for everything else; `psycopg.OperationalError`
+inherits `DatabaseError -> Error -> Exception`, none of which are excluded - verified
+directly rather than assumed. So the timeout was retried into a **second complete fetch of
+all 67 companies**, which is what put `Fetching jobs for 67 companies...` in the log twice. It
+doubled the runtime and, worse, doubled the request load on other companies' ATS APIs.
+
+### The fix: `fetch_all` takes an Engine, never a Session
+
+Raising a timeout was rejected - it treats the symptom, and the transaction would still be
+open for 40 minutes. The function now owns three explicit phases:
+
+1. one short session reads **every** company's last-fetch time in a single query
+   (`db.get_last_fetched_map`), then closes;
+2. the loop runs with **no** database connection held at all;
+3. one short session records the successful fetches.
+
+Taking an `Engine` rather than a `Session` is the part that makes it stay fixed: the
+long-open-transaction bug is no longer expressible in this function. For the same reason
+`_is_due` now takes a plain `dict[str, datetime]` instead of a `Session` - a function that
+cannot reach the database cannot reintroduce a per-company query inside the loop. There is a
+test asserting that signature, because the signature *is* the guard.
+
+`engine=None` still disables cadence entirely, preserving the "None means old behavior"
+convention `on_progress` established on the same function.
+
+### Retry policy narrowed for the fetch node only
+
+`_retry_fetch_on` never retries a `SQLAlchemyError` or anything from `psycopg`. A database
+failure is either configuration (a retry cannot fix it) or connection-level (`pool_pre_ping`
+already handles that far more cheaply, without redoing the network work). Retrying is
+reserved for a genuinely unexpected in-process error during the cheap persist/filter phase -
+and the node already survives per-company adapter failures internally by collecting them into
+`failures` rather than raising, so wholesale retry was never what protected against a flaky
+board. `stage1`/`stage2` keep the default policy: they are cheap to redo and already guard
+LLM quota internally.
+
+LangGraph's default predicate is read off `RetryPolicy().retry_on` rather than imported from
+`langgraph._internal._retry` - that module path has already moved between versions, and the
+default of a public class is the stable way to reach it.
+
+### Verified three ways, not just by unit test
+
+1. **The regression test is provably not vacuous.** Simulating the old per-company read shows
+   the event order `db_read, db_read, fetch:Cisco, db_read, fetch:Adobe`, and the assertion
+   `max(reads) < min(fetches)` fails on it. The test asserts *ordering* rather than
+   connection-pool internals, because ordering is the property that actually matters and it
+   reads identically on both engines.
+2. **Against the real Neon database.** Running `fetch_all` with a deliberately slow fetcher
+   and sampling `pg_stat_activity` from a separate connection *during* the fetch showed **no
+   application connection at all** - not merely no open transaction.
+3. **With a control, so that result means something.** Deliberately reproducing the old shape
+   (hold a session, issue the read, wait) showed `idle in transaction` on 3 of 3 samples. The
+   observer detects the bug when it is present, so its silence when the fix is in place is
+   real evidence rather than a broken probe.

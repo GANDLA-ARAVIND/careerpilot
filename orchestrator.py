@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import Optional, TypedDict
 
 from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import RetryPolicy
@@ -65,6 +67,24 @@ CHECKPOINT_DB_PATH = Path("data/orchestrator_checkpoints.db")
 # Bounded rather than unbounded so this stays a handful of cheap
 # get_state() calls, not an ever-growing scan. See docs/decisions.md.
 LOOKBACK_DAYS = 7
+
+# Checkpointer connection-pool settings. Hoisted out of _checkpointer so a
+# test can assert them without opening a real connection.
+#
+# min_size 1, not psycopg_pool's default of 4: one sequential writer, and
+# idle connections are not free on a Neon free tier.
+CHECKPOINT_POOL_MIN_SIZE = 1
+CHECKPOINT_POOL_MAX_SIZE = 2
+# Mirrors what PostgresSaver.from_conn_string sets on its own connection.
+# row_factory=dict_row is required, not cosmetic - the saver's SQL reads
+# rows as dicts and breaks without it.
+CHECKPOINT_CONNECT_KWARGS = {"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0}
+# Pre-ping run on every connection as the pool hands it out. Measured,
+# not assumed: with a backend killed to simulate Neon's idle timeout, a
+# single Connection failed and a pool WITHOUT this also failed - only a
+# pool WITH it recovered. Named here so it is one setting in one place
+# rather than an easily-dropped keyword argument.
+CHECKPOINT_POOL_CHECK = ConnectionPool.check_connection
 
 
 class PipelineState(TypedDict, total=False):
@@ -312,19 +332,36 @@ def _checkpointer():
     properties: same-day idempotency (a second run on an already-completed
     thread executes nothing) and crash recovery (a run that died at job 22
     of 30 resumes rather than refetching). Both depend entirely on the
-    checkpoint store outliving the process.
+    checkpoint store outliving the process, and on GitHub Actions the
+    runner's filesystem does not - hence Postgres.
 
-    On a local machine, data/orchestrator_checkpoints.db does that. On
-    GitHub Actions it does not: the runner's filesystem is destroyed when
-    the job ends, so a SQLite checkpointer would start empty on every run
-    and both properties would silently stop holding - no error, no warning,
-    just an orchestrator whose stated justification (see this module's
-    docstring, and CLAUDE.md) quietly stopped being true in the one
-    environment that ships. Postgres is where that state has to live once
-    the runner is ephemeral.
+    A ConnectionPool, NOT PostgresSaver.from_conn_string. That helper opens
+    a single psycopg Connection and holds it for the entire graph run,
+    including the 40+ minutes of HTTP fetching during which the
+    checkpointer does nothing at all. Neon drops the connection, and the
+    next checkpoint write dies with "SSL connection has been closed
+    unexpectedly" - which is exactly how a real nightly run failed, in
+    PostgresSaver.put_writes.
 
-    PostgresSaver.setup() is idempotent and creates LangGraph's own tables
-    (separate from the six in db.py) on first use."""
+    langgraph's _internal.get_connection yields the single Connection
+    directly but borrows per operation from a pool
+    (`with conn.connection()`), so a pool turns "one connection held for an
+    hour" into "a connection checked out for the milliseconds each
+    checkpoint write takes".
+
+    `check=ConnectionPool.check_connection` is not optional here, and that
+    was measured rather than assumed: with a backend killed server-side to
+    simulate Neon's idle timeout, a single Connection failed, a pool
+    WITHOUT check also failed, and only a pool WITH check recovered. The
+    check pre-pings each connection as it is handed out and transparently
+    replaces a dead one.
+
+    `kwargs` mirrors what from_conn_string sets, and row_factory=dict_row
+    in particular is required - the saver's own SQL reads rows as dicts.
+
+    min_size is 1, not psycopg_pool's default of 4: this pool serves one
+    sequential writer, and idle connections are not free on a Neon free
+    tier."""
     url = database_url()
     if url is None:
         CHECKPOINT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -332,11 +369,20 @@ def _checkpointer():
             yield saver
         return
 
-    # PostgresSaver takes a psycopg connection string, not a SQLAlchemy
-    # URL - the "+psycopg" driver marker db.database_url() adds for
-    # SQLAlchemy is not valid here and has to come back off.
-    with PostgresSaver.from_conn_string(url.replace("postgresql+psycopg://", "postgresql://", 1)) as saver:
-        saver.setup()
+    # psycopg takes a libpq connection string, not a SQLAlchemy URL - the
+    # "+psycopg" driver marker db.database_url() adds for SQLAlchemy has to
+    # come back off.
+    conninfo = url.replace("postgresql+psycopg://", "postgresql://", 1)
+    with ConnectionPool(
+        conninfo,
+        min_size=CHECKPOINT_POOL_MIN_SIZE,
+        max_size=CHECKPOINT_POOL_MAX_SIZE,
+        open=True,
+        check=CHECKPOINT_POOL_CHECK,
+        kwargs=CHECKPOINT_CONNECT_KWARGS,
+    ) as pool:
+        saver = PostgresSaver(pool)
+        saver.setup()  # idempotent; creates langgraph's own tables on first use
         yield saver
 
 

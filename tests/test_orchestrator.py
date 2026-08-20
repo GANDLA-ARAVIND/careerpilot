@@ -251,3 +251,76 @@ def test_analyst_nodes_keep_the_default_retry_policy():
         policy = graph.nodes[name].retry_policy
         assert policy.retry_on is not orchestrator._retry_fetch_on
         assert policy.max_attempts == 2
+
+
+# ---------------------------------------------------------------------------
+# Checkpointer connection handling. A real nightly run died in
+# PostgresSaver.put_writes with "SSL connection has been closed
+# unexpectedly": from_conn_string holds ONE connection for the whole graph
+# run, including the 40+ idle minutes while fetch_all does HTTP, and Neon
+# drops it. Measured against the real database: a single Connection failed,
+# a pool WITHOUT check also failed, only a pool WITH check recovered.
+# See docs/decisions.md.
+# ---------------------------------------------------------------------------
+
+
+def test_checkpointer_uses_a_pool_with_a_liveness_check(monkeypatch):
+    """The three things that make this survive an idle gap: a pool (so the
+    connection is borrowed per write, not held), a check callback (so a
+    dead connection is replaced rather than used), and dict_row (without
+    which the saver's own SQL cannot read its rows)."""
+    from psycopg_pool import ConnectionPool
+
+    captured = {}
+
+    class _FakePool:
+        def __init__(self, conninfo, **kwargs):
+            captured["conninfo"] = conninfo
+            captured.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeSaver:
+        def __init__(self, conn):
+            captured["saver_conn"] = conn
+
+        def setup(self):
+            captured["setup_called"] = True
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@host.neon.tech/neondb")
+    monkeypatch.setattr(orchestrator, "ConnectionPool", _FakePool)
+    monkeypatch.setattr(orchestrator, "PostgresSaver", _FakeSaver)
+
+    with orchestrator._checkpointer() as saver:
+        assert isinstance(saver, _FakeSaver)
+
+    assert captured["check"] is ConnectionPool.check_connection, "no liveness check - a dead connection would be reused"
+    assert orchestrator.CHECKPOINT_POOL_CHECK is ConnectionPool.check_connection
+    assert captured["kwargs"]["row_factory"] is not None
+    assert captured["setup_called"] is True
+    # SQLAlchemy's "+psycopg" marker is not valid libpq conninfo
+    assert "+psycopg" not in captured["conninfo"]
+
+
+def test_checkpoint_connect_kwargs_match_what_the_saver_needs():
+    """row_factory=dict_row is required by PostgresSaver's own SQL. Asserted
+    explicitly because dropping it produces a confusing failure deep inside
+    the library rather than an obvious configuration error."""
+    from psycopg.rows import dict_row
+
+    assert orchestrator.CHECKPOINT_CONNECT_KWARGS["row_factory"] is dict_row
+    assert orchestrator.CHECKPOINT_CONNECT_KWARGS["autocommit"] is True
+
+
+def test_checkpointer_still_uses_sqlite_without_database_url(monkeypatch, tmp_path):
+    """Local development keeps its file-based checkpointer, and nothing
+    tries to reach Postgres."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(orchestrator, "CHECKPOINT_DB_PATH", tmp_path / "cp.db")
+
+    with orchestrator._checkpointer() as saver:
+        assert type(saver).__name__ == "SqliteSaver"

@@ -2101,3 +2101,76 @@ default of a public class is the stable way to reach it.
    (hold a session, issue the read, wait) showed `idle in transaction` on 3 of 3 samples. The
    observer detects the bug when it is present, so its silence when the fix is in place is
    real evidence rather than a broken probe.
+
+## The second failure: PostgresSaver held one connection for the whole run
+
+With `fetch_all` fixed, the next nightly run got further and died at 40 minutes in
+`PostgresSaver.put_writes` with `psycopg.OperationalError: SSL connection has been closed
+unexpectedly`. Same underlying cause as the first failure - a connection idle across the
+long fetch - but in a component this codebase does not own.
+
+**How PostgresSaver actually manages its connection, read from the installed source rather
+than assumed.** `PostgresSaver.__init__` accepts `Conn = Connection | ConnectionPool`, and
+every operation goes through `_internal.get_connection`, which does:
+
+- a plain `Connection`: `yield conn` - the *same* connection, for the object's whole life;
+- a `ConnectionPool`: `with conn.connection() as conn` - borrowed per operation, returned
+  immediately after.
+
+`from_conn_string` (what this project was using) takes the first path: it opens one
+`Connection.connect(...)` and holds it for the entire `run_nightly`, including the 40+
+minutes during which the checkpointer does nothing at all. Passing a pool instead turns "one
+connection held for an hour" into "a connection checked out for the milliseconds each
+checkpoint write takes".
+
+**A pool alone is not sufficient - that was measured, not reasoned about.** Killing the
+backend server-side with `pg_terminate_backend` to stand in for Neon's idle timeout, against
+the real database:
+
+| configuration | outcome |
+|---|---|
+| single `Connection` (`from_conn_string`) | **failed** - `SSL connection has been closed unexpectedly`, the exact production error |
+| `ConnectionPool`, default settings | **failed** - same error |
+| `ConnectionPool` with `check=ConnectionPool.check_connection` | **survived** - dead connection discarded, fresh one issued |
+
+So the answer to "can it survive a 40-minute idle gap" is **yes, but only with the check**.
+psycopg_pool's `check` callback pre-pings each connection as it is handed out; without it the
+pool cheerfully hands back the connection it already had, which is dead. The pool's own
+`max_idle` (default 600s) does not save this either, because it only shrinks the pool down to
+`min_size` - the last connection stays and goes stale.
+
+**A detour worth recording, because the first attempt at this experiment proved nothing.**
+Run against the `-pooler` endpoint, `pg_terminate_backend` reported terminating **0**
+backends and both configurations "passed". That is not a fix, it is a broken probe: Neon's
+pooled endpoint is PgBouncer in transaction mode, which releases the *server* backend between
+transactions, so there is no idle backend to kill and `pg_stat_activity` shows nothing to
+target. What Neon dropped after 40 minutes was the client-to-pooler TLS connection, not a
+server backend. Re-running against the **direct** endpoint (same host without `-pooler`) gave
+each client a real backend and produced the table above. The recovery fix was then verified
+end-to-end through the real `-pooler` `DATABASE_URL` by force-closing the pool's connection
+mid-use and confirming the next write transparently recovered.
+
+**The settings, and why each one:**
+
+- `check=ConnectionPool.check_connection` - the whole point, per the table above.
+- `kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0}` - mirrors
+  what `from_conn_string` sets on its own connection. `row_factory=dict_row` is required, not
+  cosmetic: the saver's SQL reads rows as dicts and fails confusingly deep inside the library
+  without it.
+- `min_size=1` rather than psycopg_pool's default of 4 - one sequential writer, and idle
+  connections are not free on a Neon free tier.
+
+All of them are hoisted to module constants so a test can assert them without opening a real
+connection, which is also what stops `check` from being quietly dropped later as a
+mysterious-looking keyword argument.
+
+**Alternatives, had the answer been no.** Worth writing down since the question was asked
+directly: (1) a keepalive - periodically touching the checkpointer during the fetch - which
+is a background thread and a timer to maintain, and papers over idleness rather than removing
+it; (2) opening the checkpointer per graph *node* instead of per run, which LangGraph's API
+does not invite and would fragment the checkpoint lifecycle; (3) returning to SQLite
+checkpoints and accepting that on Actions the file dies with the runner, so same-day
+idempotency and crash-resume silently stop holding - the option previously considered and
+rejected precisely because a documented property becoming false in production is worse than
+the cost it saves. None were needed: the pool plus check works, and it is the shape the
+library already supports.

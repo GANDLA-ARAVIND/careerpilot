@@ -248,7 +248,12 @@ JD_STOP_HEADERS = [
 # possible at all. Measured live at aistudio.google.com/rate-limit (see
 # docs/decisions.md):
 GEMINI_MODEL_STAGE1 = "gemini-3.5-flash-lite"
-GEMINI_MODEL_STAGE2 = "gemini-2.5-flash"
+# Was gemini-2.5-flash - two generations OLDER than stage 1, which made
+# "stage 2 disagrees with stage 1" meaningless as a quality signal.
+# Found by pairing the two stages' cached verdicts, not by reading the
+# config. Re-checked live against models.list: gemini-3.7-flash is the
+# newest non-preview text model this key can reach. See docs/decisions.md.
+GEMINI_MODEL_STAGE2 = "gemini-3.7-flash"
 
 # RPM/RPD per model, read by llm.py (pacing) and pipeline.py (budget
 # reporting) - not hardcoded in either, since these are provider facts that
@@ -258,6 +263,16 @@ GEMINI_MODEL_STAGE2 = "gemini-2.5-flash"
 # survivors in a single stage.
 GEMINI_RATE_LIMITS = {
     GEMINI_MODEL_STAGE1: {"rpm": 15, "rpd": 500},
+    # rpd MEASURED, not assumed: the 429 body from a real exhausted run names
+    # the quota directly - quotaId "GenerateRequestsPerDayPerProjectPerModel-
+    # FreeTier", quotaValue 20. Same daily ceiling as the gemini-2.5-flash it
+    # replaced, so STAGE2_TOP_N = 15 remains the right hard cap and this
+    # model swap costs nothing in quota terms.
+    # rpm is still a conservative floor rather than a measured ceiling: 8
+    # consecutive calls at 5 RPM drew zero 429s, so the true limit is at
+    # least that, and pacing slower than allowed only costs wall-clock time.
+    # NOTE: retries consume quota too. A 503 "high demand" burst retried 5x
+    # ate a quarter of one day's 20-call budget - see docs/decisions.md.
     GEMINI_MODEL_STAGE2: {"rpm": 5, "rpd": 20},
 }
 

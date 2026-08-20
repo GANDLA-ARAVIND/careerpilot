@@ -2174,3 +2174,63 @@ idempotency and crash-resume silently stop holding - the option previously consi
 rejected precisely because a documented property becoming false in production is worse than
 the cost it saves. None were needed: the pool plus check works, and it is the shape the
 library already supports.
+
+## Stage 2 was running a model two generations older than stage 1
+
+Found by pairing the two stages' cached verdicts per job - not by reading the config, where
+`gemini-3.5-flash-lite` (stage 1) and `gemini-2.5-flash` (stage 2) sit two lines apart and
+look unremarkable. Stage 2 is described throughout as "the stronger model"; it was two
+generations behind. That makes "stage 2 disagrees with stage 1" useless as a quality signal,
+because the disagreement is as likely to be the older model being wrong.
+
+**What the key can actually reach, from a live `models.list` rather than memory:** 50 models,
+37 supporting `generateContent`. Non-preview text models: `gemini-3.7-flash`, `3.6-flash`,
+`3.5-flash`, `3.5-flash-lite`, `2.5-flash`, `2.5-flash-lite`, `2.5-pro`. Every 3.x *Pro* is
+preview-only, so the newest non-preview model available is **`gemini-3.7-flash`** - which is
+what stage 2 now uses.
+
+**Is that the same family as stage 1, making the cascade pointless?** No, and the difference
+is observable rather than nominal: `gemini-3.7-flash` is a newer generation *and* a higher
+tier than `gemini-3.5-flash-lite`, and on a real job it reported `thoughtsTokenCount: 192`
+where flash-lite has consistently reported **0** (recorded in the earlier model-comparison
+entry above). The two stages are genuinely doing different amounts of work, so the cascade
+keeps a defensible basis. Had the answer been "same family", the honest move would have been
+to drop stage 2 rather than keep paying 20 daily calls for a second opinion from the same
+judge.
+
+**Quota is unchanged, which is what makes the swap free.** Measured from a real 429 body
+rather than assumed: `quotaId` `GenerateRequestsPerDayPerProjectPerModel-FreeTier`,
+`quotaValue` **20** - the same daily ceiling `gemini-2.5-flash` had, so `STAGE2_TOP_N = 15`
+remains correct and nothing else in the budget reasoning changes.
+
+**Retries spend quota, and a 503 burst proved it expensively.** The first re-run stopped at
+9 of 15 jobs when `gemini-3.7-flash` returned 503 "experiencing high demand"; the backoff
+retried 5 times, and every attempt counted against the 20/day budget. The second run then hit
+429 immediately. Roughly a quarter of one day's stage-2 budget went to retrying a single
+temporarily-unavailable model. `llm.py` already counts attempts rather than successes for
+exactly this reason; this is the first time it cost a visible amount.
+
+**Result, stated as a like-for-like comparison.** The headline "58% -> 83%" is not one:
+58% was over 15 jobs, 83% is over the 9 that completed before quota ran out. Restricting the
+old model to the *same 9 jobs*:
+
+| stage-2 model | pairwise ordering agreement with stage 1 |
+|---|---|
+| `gemini-2.5-flash` (old) | 17/23 = **74%** |
+| `gemini-3.7-flash` (new) | 20/24 = **83%** |
+
+A real improvement, and a much smaller one than the raw figures suggest.
+
+**On the labelled jobs, the sample is too small to conclude anything yet.** Only 3 of the 12
+human-labelled "good" jobs were re-scored before quota ran out: stage 1 means 71.7, old model
+55.0, new model 62.0. The new model moves back toward the human judgment on the case that
+started this (ElevenLabs, labelled *good*: stage 1 85, old model 50, new model 78, and its
+stated reason is a requirement the JD actually contains - "experience working with customers"
+- rather than the old model's complaint that the resume "does not literally list 'APIs
+integration'"). One good example is not evidence. n=3 is not either, and this entry is not
+claiming otherwise.
+
+**Still open:** 6 of the top 15 have no stage-2 verdict from the new model, and 9 of the 12
+labelled jobs have not been re-scored. Both need tomorrow's quota. Until then the ranking on
+the dashboard mixes stage-2 verdicts from two different models, which is worth knowing before
+trusting the order.

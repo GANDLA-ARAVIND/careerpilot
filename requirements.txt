@@ -1,0 +1,33 @@
+pydantic==2.13.4
+pytest==9.1.1
+requests==2.34.2
+pyyaml==6.0.3
+sqlalchemy==2.0.51
+sentence-transformers==5.6.1
+python-dotenv==1.2.2
+langgraph==1.2.10
+langgraph-checkpoint-sqlite==3.1.1
+streamlit==1.61.0
+pypdf==6.14.2
+
+# API layer (api/). uvicorn/httpx/python-multipart were already present as
+# transitive deps but are pinned here now that they're directly relied on:
+# uvicorn runs the server, httpx backs the TestClient every api test uses,
+# python-multipart is what lets FastAPI accept the resume PDF upload.
+fastapi==0.141.1
+uvicorn==0.52.1
+sse-starlette==3.4.8
+python-multipart==0.0.32
+httpx==0.28.1
+pytest-asyncio==1.4.0
+
+# Postgres (deployed). Local development and the whole test suite still run
+# on SQLite with no driver needed - these only engage when DATABASE_URL is
+# set. psycopg 3 (not psycopg2) because SQLAlchemy's "postgresql+psycopg"
+# dialect targets it and it handles PgBouncer's transaction pooling, which
+# is what Neon's -pooler endpoint runs. langgraph-checkpoint-postgres moves
+# the orchestrator's checkpointer off the local filesystem, which stops
+# existing the moment this runs on an ephemeral CI runner - see
+# orchestrator._checkpointer and docs/decisions.md.
+psycopg[binary]==3.2.3
+langgraph-checkpoint-postgres==3.1.2

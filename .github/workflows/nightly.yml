@@ -1,0 +1,195 @@
+# Nightly job-discovery run.
+#
+# Everything this run produces lives in Postgres (job postings, analyst
+# verdicts, run metrics, per-company fetch state, and the LangGraph
+# checkpoints). Nothing is committed back to the repo, and the runner's
+# filesystem is expected to be destroyed afterwards - see
+# orchestrator._checkpointer for why the checkpointer had to move off local
+# SQLite before this workflow could exist at all.
+#
+# Two inputs the repo deliberately does NOT contain (data/ is gitignored):
+# the resume and the tuned filter preferences. Both are injected from
+# secrets at runtime - see the "Materialise" steps below.
+
+name: Nightly run
+
+on:
+  schedule:
+    # 20:30 UTC = 02:00 IST the following day (IST is UTC+5:30, no DST).
+    # GitHub runs scheduled workflows on a best-effort basis and commonly
+    # delays them under load, so treat 02:00 as "early morning", not a
+    # guarantee. Scheduled workflows are also auto-disabled after 60 days
+    # with no repository activity.
+    - cron: "30 20 * * *"
+
+  workflow_dispatch:
+    inputs:
+      fresh_thread:
+        description: >-
+          Force a genuinely fresh run. Leave off to respect same-day
+          idempotency (re-running an already-completed day does nothing,
+          by design - see orchestrator.run_nightly).
+        type: boolean
+        default: false
+
+# One run at a time. A manual trigger firing while the nightly is still
+# going would have both processes writing the same Postgres rows and, worse,
+# racing on the same LangGraph thread. Queue instead of cancelling: a
+# half-finished run holds a resumable checkpoint that the next run can pick
+# up, and cancelling mid-flight would waste the ATS requests already spent.
+concurrency:
+  group: nightly-run
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+
+    # The hard platform ceiling is 6 hours. A real run is well under an
+    # hour even on the week the large Workday tenants are due, so 90
+    # minutes is "something is badly wrong" rather than "busy night" - it
+    # fails loudly and quickly instead of burning six hours of quota before
+    # anyone finds out. The soft warning at 60 minutes below fires first.
+    timeout-minutes: 90
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      PYTHONUNBUFFERED: "1"
+      SOFT_LIMIT_MINUTES: "60"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Caches the pip download cache, keyed on requirements.txt.
+          # Worth it mainly because sentence-transformers pulls in torch,
+          # which is by far the largest thing installed.
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Check required secrets are present
+        # Fails in five seconds with a clear message rather than surfacing
+        # as a confusing psycopg or Gemini auth error several minutes in.
+        # Never echoes a value - only whether it is set.
+        env:
+          RESUME_TEXT_BASE64: ${{ secrets.RESUME_TEXT_BASE64 }}
+        run: |
+          missing=""
+          [ -n "$DATABASE_URL" ] || missing="$missing DATABASE_URL"
+          [ -n "$GEMINI_API_KEY" ] || missing="$missing GEMINI_API_KEY"
+          [ -n "$RESUME_TEXT_BASE64" ] || missing="$missing RESUME_TEXT_BASE64"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing"
+            echo "Set them under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Materialise resume from secret
+        # data/ is gitignored, so the resume is never in the repository.
+        # It is written to the runner's disk for this job only and dies
+        # with the runner. base64 rather than a raw multi-line secret so
+        # that newlines and any non-ASCII survive byte-for-byte.
+        env:
+          RESUME_TEXT_BASE64: ${{ secrets.RESUME_TEXT_BASE64 }}
+        run: |
+          mkdir -p data
+          printf '%s' "$RESUME_TEXT_BASE64" | base64 -d > data/resume.txt
+          bytes=$(wc -c < data/resume.txt)
+          if [ "$bytes" -lt 200 ]; then
+            echo "::error::data/resume.txt is only $bytes bytes - the secret is probably truncated or not base64."
+            exit 1
+          fi
+          echo "Resume written ($bytes bytes). Contents are not logged."
+
+      - name: Materialise filter preferences from secret (optional)
+        # Optional on purpose. config.load_preferences already falls back to
+        # DEFAULT_PREFERENCES for a missing file, and when this workflow was
+        # written the real data/preferences.json was byte-for-byte identical
+        # to those defaults - so omitting the secret changes nothing today.
+        # It stops being true the moment the Roles page tunes a list, and
+        # that divergence would otherwise be silent: the nightly run would
+        # quietly filter differently from local. The path taken is logged.
+        env:
+          PREFERENCES_JSON: ${{ secrets.PREFERENCES_JSON }}
+        run: |
+          mkdir -p data
+          if [ -n "$PREFERENCES_JSON" ]; then
+            printf '%s' "$PREFERENCES_JSON" > data/preferences.json
+            python -c "import json; json.load(open('data/preferences.json')); print('preferences.json parsed OK')"
+            echo "Using PREFERENCES_JSON secret."
+          else
+            echo "::notice::No PREFERENCES_JSON secret set - using config.py built-in DEFAULT_PREFERENCES."
+          fi
+
+      - name: Run the nightly pipeline
+        id: run
+        env:
+          FRESH_THREAD: ${{ inputs.fresh_thread }}
+        run: |
+          start=$(date +%s)
+
+          # A manual re-run on a day that already completed is a deliberate
+          # no-op (same-day idempotency). fresh_thread forces a new
+          # LangGraph thread so the run actually executes.
+          args=""
+          if [ "$FRESH_THREAD" = "true" ]; then
+            args="--thread-id manual-$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+            echo "Forcing a fresh thread: $args"
+          fi
+
+          set +e
+          python orchestrator.py $args
+          status=$?
+          set -e
+
+          end=$(date +%s)
+          elapsed=$(( end - start ))
+          echo "elapsed_seconds=$elapsed" >> "$GITHUB_OUTPUT"
+          printf 'Pipeline finished in %dm %ds (exit %d)\n' $(( elapsed / 60 )) $(( elapsed % 60 )) "$status"
+
+          # Loud, well before the 90-minute job timeout and the 6-hour
+          # platform ceiling. A run that has grown this long is still
+          # allowed to succeed - it is a trend worth seeing, not itself a
+          # failure - but it must not pass by unremarked.
+          soft=$(( SOFT_LIMIT_MINUTES * 60 ))
+          if [ "$elapsed" -gt "$soft" ]; then
+            echo "::warning::Run took ${elapsed}s, over the ${SOFT_LIMIT_MINUTES}-minute soft limit. The job times out at 90 minutes; investigate before it gets there."
+          fi
+
+          exit $status
+
+      - name: Report
+        if: always()
+        env:
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+          ELAPSED: ${{ steps.run.outputs.elapsed_seconds }}
+          TRIGGER: ${{ github.event_name }}
+        run: |
+          if [ "$RUN_OUTCOME" = "success" ]; then result="success"; else result="FAILED"; fi
+          {
+            echo "## Nightly run"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Result | $result |"
+            echo "| Trigger | $TRIGGER |"
+            if [ -n "$ELAPSED" ]; then
+              printf '| Duration | %dm %ds |\n' $(( ELAPSED / 60 )) $(( ELAPSED % 60 ))
+            else
+              echo "| Duration | not recorded (failed before the run step) |"
+            fi
+            echo "| Storage | Postgres (nothing written back to the repo) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$RUN_OUTCOME" != "success" ]; then
+            echo "::error::Nightly run failed. Run state is checkpointed in Postgres, so re-running resumes rather than refetching."
+          fi

@@ -1,0 +1,3079 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CareerPilot \u2014 Multi-agent AI job discovery pipeline",
+    "description": "Three agents (Scout finds company job boards, Analyst scores postings against my resume, Coach identifies recurring skill gaps), LangGraph orchestration, RAG over the job archive, and a hand-labeled evaluation set.\n\nThis is the HTTP layer over that pipeline. It wraps adapters/, filters.py, agents/, orchestrator.py, db.py, extraction.py and rag.py - it does not reimplement any of them.\n\n**The system finds and ranks; the human applies.** Nothing here submits an application to an employer, and no endpoint exists that could - that is a design decision, not a missing feature.\n\nRanking quality is measured against the hand-labeled set rather than assumed. The current result is marginal - stage-1 MRR sits only slightly above the random baseline on a small overlap. See GET /api/meta/evaluation for the numbers and their caveats.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/jobs": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List Jobs",
+        "description": "Ranked survivors, best fit first. Unscored jobs (the Analyst found\nno concrete requirements to compare against) are appended after the\nscored ones rather than sorted among them - their fit_score is not a\nreal comparison and must not compete for a ranking position.",
+        "operationId": "list_jobs_api_jobs_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "filter by application_status; repeatable",
+              "title": "Status"
+            },
+            "description": "filter by application_status; repeatable"
+          },
+          {
+            "name": "include_unscored",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Unscored"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobSummary"
+                  },
+                  "title": "Response List Jobs Api Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/rejected": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List Rejected",
+        "operationId": "list_rejected_api_jobs_rejected_get",
+        "parameters": [
+          {
+            "name": "rule",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rule"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RejectedPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Stats",
+        "operationId": "get_stats_api_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{content_hash}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job_api_jobs__content_hash__get",
+        "parameters": [
+          {
+            "name": "content_hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Content Hash"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{content_hash}/status": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Update Status",
+        "description": "Sets application_status, and applied_at the first time a job is\nmarked \"applied\". This records that the human applied; it never applies\non their behalf - there is no code path from here to an employer.",
+        "operationId": "update_status_api_jobs__content_hash__status_post",
+        "parameters": [
+          {
+            "name": "content_hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Content Hash"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/run": {
+      "post": {
+        "tags": [
+          "run"
+        ],
+        "summary": "Start Run",
+        "description": "Starts the orchestrator in a background thread.\n\nOne at a time: a second call while a run is active returns the running\nrun's id with already_running=True rather than starting a concurrent\none. Two orchestrators would double-spend the same Gemini free-tier\nquota and interleave writes to the same SQLite database.\n\nAn optional body.thread_id forces a fresh graph thread - see\nRunStartRequest for why that escape hatch has to exist.",
+        "operationId": "start_run_api_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RunStartRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStartResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/run/status": {
+      "get": {
+        "tags": [
+          "run"
+        ],
+        "summary": "Get Run Status",
+        "operationId": "get_run_status_api_run_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/run/stream": {
+      "get": {
+        "tags": [
+          "run"
+        ],
+        "summary": "Stream Run",
+        "operationId": "stream_run_api_run_stream_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resume": {
+      "get": {
+        "tags": [
+          "resume"
+        ],
+        "summary": "Get Resume",
+        "operationId": "get_resume_api_resume_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "resume"
+        ],
+        "summary": "Preview Resume",
+        "description": "Accepts a PDF upload or pasted text. Saves nothing.",
+        "operationId": "preview_resume_api_resume_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_resume_api_resume_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumePreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resume/confirm": {
+      "post": {
+        "tags": [
+          "resume"
+        ],
+        "summary": "Confirm Resume",
+        "operationId": "confirm_resume_api_resume_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeConfirmResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/preferences": {
+      "get": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Get Preferences",
+        "operationId": "get_preferences_api_preferences_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Update Preferences",
+        "operationId": "update_preferences_api_preferences_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferenceLists"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/preferences/preview": {
+      "post": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Preview Preferences",
+        "description": "Impact without saving. Runs the same filter pass the pipeline would,\nagainst the candidate lists, leaving config.* untouched.",
+        "operationId": "preview_preferences_api_preferences_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferenceLists"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesImpact"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/preferences/reset": {
+      "post": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Reset Preferences",
+        "operationId": "reset_preferences_api_preferences_reset_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesUpdateResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/companies": {
+      "get": {
+        "tags": [
+          "companies"
+        ],
+        "summary": "List Companies",
+        "operationId": "list_companies_api_companies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompaniesResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "companies"
+        ],
+        "summary": "Add Company",
+        "description": "Appends to companies.yaml.\n\nWritten with yaml.safe_dump over the parsed list rather than appending\na hand-built string, so a company name containing a colon or a quote\ncan't produce a file that no longer parses - the same reasoning\nagents/scout.py's _found_as_yaml already applies.",
+        "operationId": "add_company_api_companies_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddCompanyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddCompanyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/companies/scout": {
+      "post": {
+        "tags": [
+          "companies"
+        ],
+        "summary": "Run Scout",
+        "description": "Runs the Scout agent against one company name.\n\nBlocking and potentially slow - Scout probes up to MAX_TOTAL_ATTEMPTS\nboard endpoints and may consult the LLM once when mechanical candidates\nare exhausted. Kept synchronous rather than pushed through the run\nmanager because it's bounded, single-company, and the caller wants the\nanswer, not a stream. Writes nothing.",
+        "operationId": "run_scout_api_companies_scout_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/coach/skill-gaps": {
+      "get": {
+        "tags": [
+          "coach"
+        ],
+        "summary": "Skill Gaps",
+        "operationId": "skill_gaps_api_coach_skill_gaps_get",
+        "parameters": [
+          {
+            "name": "threshold",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 0,
+              "default": 40,
+              "title": "Threshold"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillGapsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/coach/ask": {
+      "post": {
+        "tags": [
+          "coach"
+        ],
+        "summary": "Ask",
+        "description": "A market-gap question, answered over retrieved JDs.\n\nSpends one LLM call. Imports agents.coach's market_gap and the LLM\nclient lazily so that merely importing the API doesn't pull the RAG\nstack (which reaches ranking.py, and through it sentence-transformers)\ninto every process that serves a job list.",
+        "operationId": "ask_api_coach_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/meta/runs": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Run History",
+        "description": "Recorded runs, most recent first, each with its per-stage metrics.\n\nOnly runs started through this API appear here - a CLI run spends the\nsame quota but writes no metrics row (see /runtime's caveats), so this\nis a history of API-triggered runs, not of every run that happened.",
+        "operationId": "run_history_api_meta_runs_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/meta/agents": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Agent Metrics",
+        "description": "Per-stage metrics from the most recent recorded run.",
+        "operationId": "agent_metrics_api_meta_agents_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/meta/evaluation": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Evaluation",
+        "operationId": "evaluation_api_meta_evaluation_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/meta/architecture": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Architecture",
+        "description": "A structured description of the pipeline, for the frontend to render\nas a diagram. Static by nature - this describes the system's design, not\nits runtime state, and hardcoding it here rather than in the React app\nkeeps one source of truth for what the pipeline actually is.",
+        "operationId": "architecture_api_meta_architecture_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchitectureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/meta/runtime": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Runtime",
+        "operationId": "runtime_api_meta_runtime_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Api Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddCompanyRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "ats": {
+            "type": "string",
+            "title": "Ats"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "ats",
+          "token"
+        ],
+        "title": "AddCompanyRequest"
+      },
+      "AddCompanyResponse": {
+        "properties": {
+          "added": {
+            "type": "boolean",
+            "title": "Added"
+          },
+          "company": {
+            "$ref": "#/components/schemas/CompanyStats"
+          },
+          "total_companies": {
+            "type": "integer",
+            "title": "Total Companies"
+          }
+        },
+        "type": "object",
+        "required": [
+          "added",
+          "company",
+          "total_companies"
+        ],
+        "title": "AddCompanyResponse"
+      },
+      "AgentMetric": {
+        "properties": {
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "companies_checked": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Companies Checked"
+          },
+          "jobs_retrieved": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobs Retrieved"
+          },
+          "jobs_processed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobs Processed"
+          },
+          "llm_calls": {
+            "type": "integer",
+            "title": "Llm Calls",
+            "default": 0
+          },
+          "cache_hits": {
+            "type": "integer",
+            "title": "Cache Hits",
+            "default": 0
+          },
+          "cache_misses": {
+            "type": "integer",
+            "title": "Cache Misses",
+            "default": 0
+          },
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit Rate"
+          },
+          "retries": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retries"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stage"
+        ],
+        "title": "AgentMetric",
+        "description": "Per-stage metrics from one run.\n\n`agent` is null for fetch/filter - they're pipeline stages, not agents.\nOnly the Analyst runs in the nightly path; Scout is on-demand (recorded\nseparately, see /api/companies/scout) and Coach is weekly. Labelling a\nfetch stage with an agent name would misrepresent what ran.\n\n`retries` is null, not 0, when unmeasured. LangGraph's RetryPolicy\nretries a node silently - nothing observable fires - so reporting 0\nwould be a confident claim that no retry happened when the truth is\nthat nobody counted. Null means \"not measured\"."
+      },
+      "AgentsResponse": {
+        "properties": {
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/AgentMetric"
+            },
+            "type": "array",
+            "title": "Stages"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "title": "AgentsResponse"
+      },
+      "ArchitectureAgent": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "module": {
+            "type": "string",
+            "title": "Module"
+          },
+          "runs_in_nightly_pipeline": {
+            "type": "boolean",
+            "title": "Runs In Nightly Pipeline"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "decision",
+          "description",
+          "module",
+          "runs_in_nightly_pipeline"
+        ],
+        "title": "ArchitectureAgent"
+      },
+      "ArchitectureEdge": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "target"
+        ],
+        "title": "ArchitectureEdge"
+      },
+      "ArchitectureResponse": {
+        "properties": {
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureStage"
+            },
+            "type": "array",
+            "title": "Stages"
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureAgent"
+            },
+            "type": "array",
+            "title": "Agents"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureEdge"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "principles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Principles"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stages",
+          "agents",
+          "edges",
+          "principles"
+        ],
+        "title": "ArchitectureResponse",
+        "description": "Structured enough for a frontend to render a diagram without\nhardcoding the pipeline shape in the React app."
+      },
+      "ArchitectureStage": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "uses_llm": {
+            "type": "boolean",
+            "title": "Uses Llm"
+          },
+          "module": {
+            "type": "string",
+            "title": "Module"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "description",
+          "uses_llm",
+          "module"
+        ],
+        "title": "ArchitectureStage"
+      },
+      "AskRequest": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "k": {
+            "type": "integer",
+            "title": "K",
+            "default": 12
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest"
+      },
+      "AskResponse": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "k": {
+            "type": "integer",
+            "title": "K"
+          },
+          "retrieved": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievedChunk"
+            },
+            "type": "array",
+            "title": "Retrieved"
+          },
+          "pool_size": {
+            "type": "integer",
+            "title": "Pool Size"
+          },
+          "retrieved_count": {
+            "type": "integer",
+            "title": "Retrieved Count"
+          },
+          "retrieval_was_noop": {
+            "type": "boolean",
+            "title": "Retrieval Was Noop"
+          },
+          "population_size": {
+            "type": "integer",
+            "title": "Population Size"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question",
+          "answer",
+          "k",
+          "pool_size",
+          "retrieved_count",
+          "retrieval_was_noop",
+          "population_size"
+        ],
+        "title": "AskResponse",
+        "description": "A Coach answer plus what it actually retrieved. The retrieved set is\nreturned alongside the answer, not hidden, so the answer can be checked\nagainst its own evidence rather than taken on trust - the whole point of\nRAG over a chatbot.\n\n`retrieval_was_noop` is surfaced, not buried: at this project's current\ncorpus size, k frequently exceeds the matching pool, meaning \"retrieval\"\nreturned everything and ranked nothing. An answer built that way is\nstill useful, but calling it retrieval-augmented would overstate what\nhappened. See rag.RetrievalResult.is_noop."
+      },
+      "Body_preview_resume_api_resume_post": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "title": "Body_preview_resume_api_resume_post"
+      },
+      "CompaniesResponse": {
+        "properties": {
+          "companies": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyStats"
+            },
+            "type": "array",
+            "title": "Companies"
+          },
+          "zero_survivor_companies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Zero Survivor Companies"
+          }
+        },
+        "type": "object",
+        "required": [
+          "companies",
+          "zero_survivor_companies"
+        ],
+        "title": "CompaniesResponse"
+      },
+      "CompanyStats": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "ats": {
+            "type": "string",
+            "title": "Ats"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "jobs_fetched": {
+            "type": "integer",
+            "title": "Jobs Fetched"
+          },
+          "survivors": {
+            "type": "integer",
+            "title": "Survivors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "ats",
+          "token",
+          "jobs_fetched",
+          "survivors"
+        ],
+        "title": "CompanyStats",
+        "description": "One companies.yaml entry plus what it actually contributed.\nfetched > 0 with survivors == 0 means the company is costing a nightly\nfetch and returning nothing usable - a removal candidate."
+      },
+      "EvaluationResponse": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N",
+            "default": 0
+          },
+          "total_labels": {
+            "type": "integer",
+            "title": "Total Labels",
+            "default": 0
+          },
+          "label_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Label Counts"
+          },
+          "overlap_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Overlap Counts"
+          },
+          "is_minority_of_label_set": {
+            "type": "boolean",
+            "title": "Is Minority Of Label Set",
+            "default": false
+          },
+          "mrr": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Mrr"
+          },
+          "recall_at_10": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Recall At 10"
+          },
+          "recall_at_20": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Recall At 20"
+          },
+          "good_positions": {
+            "items": {
+              "$ref": "#/components/schemas/GoodJobPosition"
+            },
+            "type": "array",
+            "title": "Good Positions"
+          },
+          "top_stage1_fit_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Stage1 Fit Score"
+          },
+          "top_stage1_company": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Stage1 Company"
+          },
+          "top_stage1_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Stage1 Title"
+          },
+          "top_stage1_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Stage1 Label"
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats"
+          }
+        },
+        "type": "object",
+        "required": [
+          "available"
+        ],
+        "title": "EvaluationResponse",
+        "description": "Measured ranking quality against the hand-labeled set.\n\nServed from a precomputed snapshot (data/evaluation_results.json,\nregenerated by `python evaluate_stage1.py --json`) rather than computed\nper request: computing it imports sentence-transformers/torch and\nre-embeds every overlap job, which would make one endpoint responsible\nfor hundreds of megabytes of process memory and a ~15s first call.\n\n`available=False` means the snapshot hasn't been generated yet - an\nhonest empty state, not zeros that would read as measured results."
+      },
+      "GoodJobPosition": {
+        "properties": {
+          "company": {
+            "type": "string",
+            "title": "Company"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "embedding_position": {
+            "type": "integer",
+            "title": "Embedding Position"
+          },
+          "stage1_position": {
+            "type": "integer",
+            "title": "Stage1 Position"
+          }
+        },
+        "type": "object",
+        "required": [
+          "company",
+          "title",
+          "embedding_position",
+          "stage1_position"
+        ],
+        "title": "GoodJobPosition"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "JobDetail": {
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "company": {
+            "type": "string",
+            "title": "Company"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "remote_type": {
+            "type": "string",
+            "title": "Remote Type"
+          },
+          "fit_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fit Score"
+          },
+          "verdict": {
+            "type": "string",
+            "title": "Verdict"
+          },
+          "is_unscored": {
+            "type": "boolean",
+            "title": "Is Unscored"
+          },
+          "matched_skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Skills"
+          },
+          "missing_skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Skills"
+          },
+          "reasoning": {
+            "type": "string",
+            "title": "Reasoning"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "years_required": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Years Required"
+          },
+          "resume_meets_experience": {
+            "type": "boolean",
+            "title": "Resume Meets Experience"
+          },
+          "application_status": {
+            "type": "string",
+            "title": "Application Status"
+          },
+          "applied_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Seen"
+          },
+          "is_new": {
+            "type": "boolean",
+            "title": "Is New"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content_hash",
+          "company",
+          "title",
+          "url",
+          "remote_type",
+          "verdict",
+          "is_unscored",
+          "reasoning",
+          "model",
+          "resume_meets_experience",
+          "application_status",
+          "first_seen",
+          "is_new",
+          "description"
+        ],
+        "title": "JobDetail"
+      },
+      "JobSummary": {
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "company": {
+            "type": "string",
+            "title": "Company"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "remote_type": {
+            "type": "string",
+            "title": "Remote Type"
+          },
+          "fit_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fit Score"
+          },
+          "verdict": {
+            "type": "string",
+            "title": "Verdict"
+          },
+          "is_unscored": {
+            "type": "boolean",
+            "title": "Is Unscored"
+          },
+          "matched_skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Skills"
+          },
+          "missing_skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Skills"
+          },
+          "reasoning": {
+            "type": "string",
+            "title": "Reasoning"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "years_required": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Years Required"
+          },
+          "resume_meets_experience": {
+            "type": "boolean",
+            "title": "Resume Meets Experience"
+          },
+          "application_status": {
+            "type": "string",
+            "title": "Application Status"
+          },
+          "applied_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Seen"
+          },
+          "is_new": {
+            "type": "boolean",
+            "title": "Is New"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content_hash",
+          "company",
+          "title",
+          "url",
+          "remote_type",
+          "verdict",
+          "is_unscored",
+          "reasoning",
+          "model",
+          "resume_meets_experience",
+          "application_status",
+          "first_seen",
+          "is_new"
+        ],
+        "title": "JobSummary",
+        "description": "One ranked survivor. No description - see JobDetail. fit_score and\nverdict are Optional because an \"unscored\" job (no concrete technical\nrequirements in the posting, see agents/analyst.py's is_unscored) has\nno real score, and serving a 0 or a 50 there would be inventing a\njudgment the Analyst explicitly declined to make. is_unscored says\nwhich case a null is."
+      },
+      "PreferenceLists": {
+        "properties": {
+          "title_allowlist": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Title Allowlist"
+          },
+          "seniority_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Seniority Keywords"
+          },
+          "non_engineering_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Non Engineering Keywords"
+          },
+          "india_location_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "India Location Keywords"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title_allowlist",
+          "seniority_keywords",
+          "non_engineering_keywords",
+          "india_location_keywords"
+        ],
+        "title": "PreferenceLists",
+        "description": "The four editable rule-filter keyword lists. Mirrors\nmodels.Preferences exactly - kept as its own type so the HTTP contract\ndoesn't silently change shape if the domain model gains an internal\nfield."
+      },
+      "PreferencesImpact": {
+        "properties": {
+          "current_survivors": {
+            "type": "integer",
+            "title": "Current Survivors"
+          },
+          "new_survivors": {
+            "type": "integer",
+            "title": "New Survivors"
+          },
+          "delta": {
+            "type": "integer",
+            "title": "Delta"
+          },
+          "unanalyzed_after": {
+            "type": "integer",
+            "title": "Unanalyzed After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_survivors",
+          "new_survivors",
+          "delta",
+          "unanalyzed_after"
+        ],
+        "title": "PreferencesImpact",
+        "description": "Survivor counts before and after a candidate edit. `unanalyzed_after`\nis how many of the new survivors have no Analyst result yet - i.e. how\nmuch a run would actually have to do."
+      },
+      "PreferencesResponse": {
+        "properties": {
+          "title_allowlist": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Title Allowlist"
+          },
+          "seniority_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Seniority Keywords"
+          },
+          "non_engineering_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Non Engineering Keywords"
+          },
+          "india_location_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "India Location Keywords"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "is_default": {
+            "type": "boolean",
+            "title": "Is Default",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "title_allowlist",
+          "seniority_keywords",
+          "non_engineering_keywords",
+          "india_location_keywords"
+        ],
+        "title": "PreferencesResponse",
+        "description": "`warnings` carries config.load_preferences' fallback notices - an\nemptied or unparseable list means the filters are running on built-in\ndefaults instead of what's on disk, and that has to be visible rather\nthan silently corrected. An empty title_allowlist in particular would\nlet every job through and burn a day's LLM quota on unfiltered noise."
+      },
+      "PreferencesUpdateResponse": {
+        "properties": {
+          "title_allowlist": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Title Allowlist"
+          },
+          "seniority_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Seniority Keywords"
+          },
+          "non_engineering_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Non Engineering Keywords"
+          },
+          "india_location_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "India Location Keywords"
+          },
+          "saved": {
+            "type": "boolean",
+            "title": "Saved"
+          },
+          "survivors": {
+            "type": "integer",
+            "title": "Survivors"
+          },
+          "unanalyzed": {
+            "type": "integer",
+            "title": "Unanalyzed"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title_allowlist",
+          "seniority_keywords",
+          "non_engineering_keywords",
+          "india_location_keywords",
+          "saved",
+          "survivors",
+          "unanalyzed"
+        ],
+        "title": "PreferencesUpdateResponse"
+      },
+      "QuotaModel": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "calls_today": {
+            "type": "integer",
+            "title": "Calls Today"
+          },
+          "daily_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Limit"
+          },
+          "requests_per_minute": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests Per Minute"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "calls_today"
+        ],
+        "title": "QuotaModel"
+      },
+      "RejectedJob": {
+        "properties": {
+          "company": {
+            "type": "string",
+            "title": "Company"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "company",
+          "title",
+          "reason"
+        ],
+        "title": "RejectedJob"
+      },
+      "RejectedPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RejectedJob"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rules"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "rules"
+        ],
+        "title": "RejectedPage"
+      },
+      "ResumeConfirmRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "ResumeConfirmRequest"
+      },
+      "ResumeConfirmResponse": {
+        "properties": {
+          "saved": {
+            "type": "boolean",
+            "title": "Saved"
+          },
+          "length": {
+            "type": "integer",
+            "title": "Length"
+          },
+          "invalidated_cached_analyses": {
+            "type": "integer",
+            "title": "Invalidated Cached Analyses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "saved",
+          "length",
+          "invalidated_cached_analyses"
+        ],
+        "title": "ResumeConfirmResponse"
+      },
+      "ResumeExtraction": {
+        "properties": {
+          "skills": {
+            "type": "string",
+            "title": "Skills"
+          },
+          "projects": {
+            "type": "string",
+            "title": "Projects"
+          },
+          "extracted": {
+            "type": "boolean",
+            "title": "Extracted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "skills",
+          "projects",
+          "extracted"
+        ],
+        "title": "ResumeExtraction",
+        "description": "What extraction.extract_resume_sections pulled, and whether it\nactually recognized headers or fell back.\n\n`extracted=False` means no \"Technical Skills\"/\"Projects\" header matched\nand the FULL text would be sent to the Analyst instead of a trimmed\nsection. That's surfaced as its own boolean rather than left implicit,\non the same visible-fallback principle the JD extractor follows: a\nsilent fallback looks exactly like a successful extraction from the\noutside, and would quietly change every score."
+      },
+      "ResumePreview": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "length": {
+            "type": "integer",
+            "title": "Length"
+          },
+          "extraction": {
+            "$ref": "#/components/schemas/ResumeExtraction"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "invalidates_cached_analyses": {
+            "type": "integer",
+            "title": "Invalidates Cached Analyses"
+          },
+          "previous_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Length"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "length",
+          "extraction",
+          "invalidates_cached_analyses"
+        ],
+        "title": "ResumePreview",
+        "description": "A candidate resume, not yet saved. `warnings` are the mangled-PDF\ntripwires (unusually long words, low space ratio, big length drop) -\nempty means nothing obvious looked wrong, never that extraction is\nproven clean.\n\n`invalidates_cached_analyses` is how many currently-analyzed jobs would\nneed re-scoring if this were saved: the resume text is part of every\nAnalyst cache key, so changing it doesn't corrupt anything, it just\nstops matching - and the next run spends real quota re-analyzing."
+      },
+      "ResumeResponse": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "length": {
+            "type": "integer",
+            "title": "Length"
+          },
+          "extraction": {
+            "$ref": "#/components/schemas/ResumeExtraction"
+          },
+          "exists": {
+            "type": "boolean",
+            "title": "Exists"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "length",
+          "extraction",
+          "exists"
+        ],
+        "title": "ResumeResponse"
+      },
+      "RetrievedChunk": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "score"
+        ],
+        "title": "RetrievedChunk",
+        "description": "One retrieved JD requirements excerpt and its cosine similarity to\nthe question."
+      },
+      "RunEvent": {
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "title": "Seq"
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Ts"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "extra": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Extra"
+          }
+        },
+        "type": "object",
+        "required": [
+          "seq",
+          "ts",
+          "stage",
+          "message"
+        ],
+        "title": "RunEvent",
+        "description": "One progress event, as served over SSE and replayed by\n/api/run/status. Mirrors pipeline.ProgressEvent plus a sequence number\nand timestamp the API adds.\n\n`seq` is monotonic within a run so a client that reconnects can tell\nwhether it missed anything and in what order things happened - SSE\ngives no ordering guarantee across a reconnect on its own.\n\n`agent` is null for fetch/filter on purpose: those are pipeline stages,\nnot agents. See pipeline.ProgressEvent.agent."
+      },
+      "RunHistoryEntry": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "total_llm_calls": {
+            "type": "integer",
+            "title": "Total Llm Calls",
+            "default": 0
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/AgentMetric"
+            },
+            "type": "array",
+            "title": "Stages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "status",
+          "started_at"
+        ],
+        "title": "RunHistoryEntry",
+        "description": "One recorded run, with its per-stage detail.\n\nSame AgentMetric shape as AgentsResponse.stages - the history view and\nthe latest-run view render identical rows, so they must not diverge\ninto two subtly different metric types."
+      },
+      "RunHistoryResponse": {
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunHistoryEntry"
+            },
+            "type": "array",
+            "title": "Runs"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "title": "RunHistoryResponse"
+      },
+      "RunStartRequest": {
+        "properties": {
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "type": "object",
+        "title": "RunStartRequest",
+        "description": "Optional body for POST /api/run.\n\nthread_id overrides orchestrator.run_nightly's automatic date-based\nthread selection. It exists because that automatic selection is\ndeliberately idempotent: once `nightly-YYYY-MM-DD` has reached END,\nre-invoking it resumes a completed graph, which LangGraph correctly\nanswers by returning the checkpointed final state without executing a\nsingle node. That is the right behaviour for a 2am cron that might\nfire twice - but from a UI it looks like \"Start run\" did nothing, with\nan empty timeline and no explanation.\n\nPassing an unused thread_id forces a genuinely fresh run. The UI sends\none only when the user explicitly asks to re-run a day that already\ncompleted, so the ordinary path keeps the crash-resume behaviour the\ndate-based ids give it."
+      },
+      "RunStartResponse": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "already_running": {
+            "type": "boolean",
+            "title": "Already Running",
+            "default": false
+          },
+          "no_op": {
+            "type": "boolean",
+            "title": "No Op",
+            "default": false
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "status"
+        ],
+        "title": "RunStartResponse"
+      },
+      "RunStatus": {
+        "properties": {
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "current_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Agent"
+          },
+          "last_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Message"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/RunEvent"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "RunStatus",
+        "description": "Everything a client needs to render Mission Control from a cold\nconnect, without having watched the stream from the beginning.\n\n`events` carries the full replay buffer for the current/last run, so a\nbrowser refresh at job 30 of 41 shows the whole run rather than a blank\npane until the next event happens to fire."
+      },
+      "RuntimeResponse": {
+        "properties": {
+          "test_count": {
+            "type": "integer",
+            "title": "Test Count"
+          },
+          "db_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Db Size Bytes"
+          },
+          "db_backend": {
+            "type": "string",
+            "title": "Db Backend"
+          },
+          "job_count": {
+            "type": "integer",
+            "title": "Job Count"
+          },
+          "analyst_result_count": {
+            "type": "integer",
+            "title": "Analyst Result Count"
+          },
+          "total_tokens_recorded": {
+            "type": "integer",
+            "title": "Total Tokens Recorded"
+          },
+          "last_successful_run": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Successful Run"
+          },
+          "quota": {
+            "items": {
+              "$ref": "#/components/schemas/QuotaModel"
+            },
+            "type": "array",
+            "title": "Quota"
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats"
+          },
+          "extra": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Extra"
+          }
+        },
+        "type": "object",
+        "required": [
+          "test_count",
+          "db_backend",
+          "job_count",
+          "analyst_result_count",
+          "total_tokens_recorded"
+        ],
+        "title": "RuntimeResponse",
+        "description": "`quota` is derived from run_agent_metrics - i.e. only counts runs\nstarted through this API. A run launched from the CLI\n(`python orchestrator.py`) spends the same Gemini quota but writes no\nmetrics row, so these numbers are a floor, not a ledger. Stated in\n`caveats` rather than presented as exact."
+      },
+      "ScoutEmptyBoard": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "source"
+        ],
+        "title": "ScoutEmptyBoard"
+      },
+      "ScoutRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ScoutRequest"
+      },
+      "ScoutResponse": {
+        "properties": {
+          "company_name": {
+            "type": "string",
+            "title": "Company Name"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "ats": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ats"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          },
+          "job_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Count"
+          },
+          "conclusion": {
+            "type": "string",
+            "title": "Conclusion"
+          },
+          "requests_used": {
+            "type": "integer",
+            "title": "Requests Used"
+          },
+          "empty_boards": {
+            "items": {
+              "$ref": "#/components/schemas/ScoutEmptyBoard"
+            },
+            "type": "array",
+            "title": "Empty Boards"
+          }
+        },
+        "type": "object",
+        "required": [
+          "company_name",
+          "success",
+          "conclusion",
+          "requests_used"
+        ],
+        "title": "ScoutResponse",
+        "description": "What Scout concluded. `success=False` with a non-empty\n`empty_boards` is a distinct, useful outcome from a flat miss: a real\nboard exists, it just has zero open jobs right now, so it's worth\nre-scouting later rather than writing the company off.\n\nNothing here is written to companies.yaml - POST /api/companies does\nthat, deliberately as a separate, explicit step."
+      },
+      "SkillGap": {
+        "properties": {
+          "skill": {
+            "type": "string",
+            "title": "Skill"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "skill",
+          "count"
+        ],
+        "title": "SkillGap"
+      },
+      "SkillGapsResponse": {
+        "properties": {
+          "threshold": {
+            "type": "integer",
+            "title": "Threshold"
+          },
+          "job_count": {
+            "type": "integer",
+            "title": "Job Count"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/SkillGap"
+            },
+            "type": "array",
+            "title": "Skills"
+          }
+        },
+        "type": "object",
+        "required": [
+          "threshold",
+          "job_count"
+        ],
+        "title": "SkillGapsResponse",
+        "description": "Missing-skills frequency across stage-1-scored jobs below a\nthreshold. Stage-1 only, deliberately: mixing stage-1 and stage-2 rows\nwould aggregate judgments made by two different models into one count\nthat means neither. See agents/coach.py."
+      },
+      "StatsResponse": {
+        "properties": {
+          "total_fetched": {
+            "type": "integer",
+            "title": "Total Fetched"
+          },
+          "survived": {
+            "type": "integer",
+            "title": "Survived"
+          },
+          "analyzed": {
+            "type": "integer",
+            "title": "Analyzed"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "rejected_by": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Rejected By"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_fetched",
+          "survived",
+          "analyzed",
+          "pending",
+          "rejected_by"
+        ],
+        "title": "StatsResponse",
+        "description": "The funnel. `pending` is survivors with no Analyst result yet -\nsurfaced as its own number rather than folded into `analyzed`, because\n\"the orchestrator hasn't reached it\" and \"the Analyst looked and had\nnothing to compare\" are different states with different fixes."
+      },
+      "StatusUpdateRequest": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "StatusUpdateRequest"
+      },
+      "StatusUpdateResponse": {
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "application_status": {
+            "type": "string",
+            "title": "Application Status"
+          },
+          "applied_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content_hash",
+          "application_status"
+        ],
+        "title": "StatusUpdateResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

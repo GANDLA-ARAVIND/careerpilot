@@ -58,6 +58,18 @@ DEFAULT_PREFERENCES = Preferences(
         "finance",
         "legal",
         "customer support",
+        # Recruiting/HR roles that the existing "hr"/"human resources"
+        # entries miss - a real HR posting ("Trainee - Recruitment
+        # Coordinator") reached the morning list and was only caught by the
+        # Analyst scoring it 0, which cost an LLM call a keyword saves.
+        # "talent" is broad on purpose but carries a known false-positive
+        # shape: talent-tech companies title real engineering roles with it
+        # (Mercor's "Product Engineer, Talent Experience"). It rejects
+        # nothing today; see docs/decisions.md before widening further.
+        "recruitment",
+        "recruiter",
+        "talent acquisition",
+        "talent",
     ],
     title_allowlist=[
         "software engineer",

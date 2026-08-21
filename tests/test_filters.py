@@ -532,3 +532,18 @@ def test_range_parsing_survives_delimiter_normalisation_not_being_applied():
     This asserts the experience parser reads the RAW title."""
     assert normalize_title_delimiters("Software Engineer (5-7 years)") == "Software Engineer (5 7 years)"
     assert parse_title_experience_years("Software Engineer (5-7 years)") == 7.0
+
+
+def test_recruiting_titles_are_rejected_as_non_engineering():
+    """A real HR posting reached the morning list because the keyword list
+    had "hr" and "human resources" but nothing for recruiting. The Analyst
+    caught it by scoring 0, which cost an LLM call a keyword saves."""
+    assert reject_reason_for("Trainee - Recruitment Coordinator", "Bangalore") == "non_engineering"
+    assert reject_reason_for("Technical Recruiter", "Bangalore") == "non_engineering"
+    assert reject_reason_for("Talent Acquisition Partner", "Bangalore") == "non_engineering"
+
+
+def test_engineering_titles_are_not_caught_by_the_recruiting_keywords():
+    """The guard against over-reach: these must stay eligible."""
+    assert reject_reason_for("Software Engineer", "Bangalore") is None
+    assert reject_reason_for("Backend Engineer", "Bangalore") is None

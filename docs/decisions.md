@@ -2605,3 +2605,39 @@ all is that `NON_ENGINEERING_KEYWORDS` contains "hr" and "human resources" but n
 "recruitment", "recruiter" or "talent". The Analyst caught it, so the outcome is right, but
 it cost an LLM call that a keyword would have saved. Adding those keywords would need the
 same before/after survivor count as any other filter change.
+
+## Recruiting keywords added to NON_ENGINEERING_KEYWORDS
+
+Closing the gap the Meesho HR posting exposed: the list had "hr" and "human resources" but
+nothing matching "Recruitment Coordinator", so an HR role reached the morning view and was
+only caught by the Analyst scoring it 0 - correct, but it spent an LLM call a keyword saves.
+
+**Before/after: 87 -> 86 survivors, one job rejected**, and it is exactly the one that
+prompted the change:
+
+```
+[non_engineering] Meesho | Trainee - Recruitment Coordinator  (Bangalore, Karnataka)
+```
+
+**Attribution, because "add four keywords" hides which one did the work:** `recruitment` and
+`recruiter` account for the single rejection. `talent acquisition` is fully subsumed by
+`talent` (any title containing the phrase contains the word, and `_text_contains_any` matches
+on word boundaries). `talent` on its own rejects **zero** additional survivors.
+
+**`talent` carries a known false-positive shape and is kept deliberately, not carelessly.**
+It matches 167 titles archive-wide - all already rejected by other rules, so it costs nothing
+today. But it is a *domain* word, not a *role* word, and talent-tech companies title real
+engineering roles with it. The concrete case in the archive is Mercor's **"Product Engineer,
+Talent Experience"**, a genuine engineering posting currently rejected as `not_allowlisted`.
+If the allowlist ever admits "product engineer", this keyword would reject a real engineering
+job for containing its employer's product domain. Recorded rather than removed, because it
+changes nothing now and the risk is contingent on an unrelated future edit - but this is
+where to look if an engineering role goes missing.
+
+**Both sources updated, which matters more than it looks.**
+`config.NON_ENGINEERING_KEYWORDS` is populated from `data/preferences.json` (see
+`config.load_preferences`), not from `DEFAULT_PREFERENCES` directly. Changing only the code
+default would have left local runs on the old list while the GitHub Actions runner - which
+has no `preferences.json` unless the optional `PREFERENCES_JSON` secret is set - used the new
+one, filtering differently in the two places with nothing to indicate it. Both were updated
+and asserted equal.

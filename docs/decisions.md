@@ -2519,3 +2519,49 @@ worth it for a change this size. Replaying the component's grouping over the rea
 covers the logic and the data; it does not cover rendering. Stated rather than glossed,
 because "the API returns the right thing" is precisely the claim that was already wrong twice
 here.
+
+## Eligibility filter: 87 survivors down to 21 in the morning view
+
+The rule filters were doing their job - the list was just long. 64 of 87 survivors stated an
+experience requirement the resume does not meet, so the reading experience was scrolling past
+dozens of unreachable roles to find a handful.
+
+**The distribution, measured before building anything** (the number was asked for first, and
+it changed the design):
+
+| combination | count |
+|---|---:|
+| requirement stated **and** resume meets it | 3 |
+| not stated **and** Analyst says meets | 12 |
+| not stated **but** Analyst says unmet | 8 |
+| requirement stated, resume does **not** meet | 64 |
+
+Worth stating plainly: only **3** of the eligible jobs are "a number was extracted and you
+clear it". The other 20 are eligible because **no requirement was extracted at all**, which
+means *unknown*, not *you qualify*. An eligibility filter here is mostly filtering on the
+absence of evidence, and that is a weaker signal than the label suggests.
+
+**Three states, not two.** The 8 jobs with no extracted figure but an Analyst judgement of
+"unmet" do not fit a binary. Hiding them would discard a real signal; treating them as
+equivalent to a confirmed match would overstate them. `experience_eligibility` returns
+`meets` / `unconfirmed` / `not_met`, and only `not_met` is ever hidden - the one state where
+a concrete requirement was actually extracted and actually missed. `unconfirmed` stays
+visible, sorted below the confirmed ones under a line explaining *why* they are lower, since
+otherwise a fit-30 job appearing beneath a fit-15 one just looks like a broken sort.
+
+**Classified in the backend, again.** `JobSummary.eligibility` is set from
+`app.experience_eligibility`. The Jobs page re-deriving a backend rule in TypeScript is
+exactly what silently undid the unscored promotion one change earlier; the frontend filters
+and groups on the stated value and computes nothing.
+
+**Default ON, never silent.** The toggle starts enabled, and whenever it removes anything the
+page says so with a count and an inline "Show them" - the same rule applied to the status
+filter after two applied-to jobs vanished without explanation.
+
+Verified by replaying the component's exact grouping over the live payload: with the default
+status filter and the toggle on, **87 -> 85 (status) -> 21 visible**, with two notices ("2
+hidden - 2 applied" and "64 hidden - they state an experience requirement your resume doesn't
+meet"). Order: Cisco Evergreen (promoted), then 10 confirmed-eligible scored jobs, then the 8
+unconfirmed under their explanatory line, then 2 "could not evaluate". Toggling off restores
+85. Production build passes, TypeScript clean, 604 tests. Still not browser-verified -
+Playwright is not installed here - so this covers logic and data, not rendering.

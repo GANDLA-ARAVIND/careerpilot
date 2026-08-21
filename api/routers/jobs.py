@@ -24,7 +24,12 @@ from api.schemas.jobs import (
     StatusUpdateRequest,
     StatusUpdateResponse,
 )
-from api.services.dashboard import load_dashboard_jobs, partition_unscored_by_experience, run_filter_pass
+from api.services.dashboard import (
+    experience_eligibility,
+    load_dashboard_jobs,
+    partition_unscored_by_experience,
+    run_filter_pass,
+)
 from app import STATUSES, read_last_viewed, set_application_status
 from db import JobPostingRow
 
@@ -43,6 +48,7 @@ def _to_summary(dj, *, promoted: bool = False) -> JobSummary:
         verdict=dj.verdict,
         is_unscored=dj.is_unscored,
         is_promoted_unscored=promoted,
+        eligibility=experience_eligibility(dj.years_required, dj.resume_meets_it),
         matched_skills=dj.matched_skills,
         missing_skills=dj.missing_skills,
         reasoning=dj.reasoning,

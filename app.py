@@ -102,6 +102,37 @@ class DashboardJob:
     is_unscored: bool  # True: both matched_skills and missing_skills came back empty - see agents/analyst.py's is_unscored
 
 
+# How a job's experience requirement stands against the resume. Three
+# states, not two, because "no figure was extracted" is genuinely different
+# from both "you clear the bar" and "you do not" - the same None-is-not-zero
+# rule the rest of this codebase follows.
+#
+#   "meets"       the Analyst judged the resume meets it (figure or not)
+#   "unconfirmed" no figure was extracted AND the Analyst judged it unmet -
+#                 eligible on the stated rule (nothing concrete bars you)
+#                 but with a real signal against it, so callers sort these
+#                 below the confirmed ones rather than hiding or promoting
+#   "not_met"     a figure WAS extracted and the resume does not meet it -
+#                 the only state the eligibility filter hides
+ELIGIBILITY_MEETS = "meets"
+ELIGIBILITY_UNCONFIRMED = "unconfirmed"
+ELIGIBILITY_NOT_MET = "not_met"
+
+
+def experience_eligibility(years_required: Optional[float], resume_meets_it: bool) -> str:
+    """Classify one job's experience standing. See the constants above.
+
+    Deliberately computed here rather than in the frontend: the Jobs page
+    already re-derived a rule once and silently undid the backend's
+    ordering (see docs/decisions.md). The backend states the fact; the UI
+    filters and groups on it."""
+    if resume_meets_it:
+        return ELIGIBILITY_MEETS
+    if years_required is None:
+        return ELIGIBILITY_UNCONFIRMED
+    return ELIGIBILITY_NOT_MET
+
+
 def partition_unscored_by_experience(
     unscored: list[DashboardJob],
 ) -> tuple[list[DashboardJob], list[DashboardJob]]:

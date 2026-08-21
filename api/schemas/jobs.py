@@ -30,6 +30,11 @@ class JobSummary(BaseModel):
     # unscored: fit_score stays null and the card still reads "could not
     # evaluate"; this only says where it belongs in the list.
     is_promoted_unscored: bool = False
+    # "meets" | "unconfirmed" | "not_met" - see app.experience_eligibility.
+    # The Jobs page hides "not_met" by default and sorts "unconfirmed" below
+    # "meets", so the classification lives here rather than being re-derived
+    # in TypeScript where it would drift.
+    eligibility: str = "meets"
     matched_skills: list[str] = Field(default_factory=list)
     missing_skills: list[str] = Field(default_factory=list)
     reasoning: str

@@ -327,3 +327,51 @@ def test_promoted_unscored_job_is_flagged_for_the_frontend(client, temp_env):
 def test_a_scored_job_is_never_flagged_as_promoted(client, seeded):
     body = client.get("/api/jobs").json()
     assert all(not j["is_promoted_unscored"] for j in body if not j["is_unscored"])
+
+
+# ---------------------------------------------------------------------------
+# Experience eligibility. Three states, not two: "no figure was extracted"
+# is different from both "you clear the bar" and "you do not".
+# ---------------------------------------------------------------------------
+
+
+def test_eligibility_meets_when_the_resume_clears_a_stated_requirement():
+    from api.services.dashboard import experience_eligibility
+
+    assert experience_eligibility(2.0, True) == "meets"
+
+
+def test_eligibility_meets_even_with_no_figure_when_the_analyst_says_so():
+    from api.services.dashboard import experience_eligibility
+
+    assert experience_eligibility(None, True) == "meets"
+
+
+def test_eligibility_is_unconfirmed_when_no_figure_was_extracted_but_judged_unmet():
+    """Nothing concrete bars the candidate, so this is not hidden - but the
+    Analyst's judgement is real, so it sorts below the confirmed ones
+    rather than being treated as equivalent."""
+    from api.services.dashboard import experience_eligibility
+
+    assert experience_eligibility(None, False) == "unconfirmed"
+
+
+def test_eligibility_is_not_met_only_when_a_real_figure_is_missed():
+    """The only state the Jobs page hides by default."""
+    from api.services.dashboard import experience_eligibility
+
+    assert experience_eligibility(4.0, False) == "not_met"
+    assert experience_eligibility(0.0, False) == "not_met"  # 0.0 is a stated figure, not "unstated"
+
+
+def test_every_job_summary_carries_an_eligibility_value(client, seeded, temp_env):
+    add_analyst_result(temp_env["engine"], seeded["survivor_a"], model=GEMINI_MODEL_STAGE1, fit_score=80)
+
+    body = client.get("/api/jobs").json()
+
+    assert body
+    for job in body:
+        assert job["eligibility"] in {"meets", "unconfirmed", "not_met"}
+        if job["eligibility"] == "not_met":
+            assert job["years_required"] is not None
+            assert job["resume_meets_experience"] is False

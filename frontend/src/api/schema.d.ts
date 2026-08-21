@@ -800,6 +800,11 @@ export interface components {
              * @default false
              */
             is_promoted_unscored: boolean;
+            /**
+             * Eligibility
+             * @default meets
+             */
+            eligibility: string;
             /** Matched Skills */
             matched_skills?: string[];
             /** Missing Skills */
@@ -859,6 +864,11 @@ export interface components {
              * @default false
              */
             is_promoted_unscored: boolean;
+            /**
+             * Eligibility
+             * @default meets
+             */
+            eligibility: string;
             /** Matched Skills */
             matched_skills?: string[];
             /** Missing Skills */

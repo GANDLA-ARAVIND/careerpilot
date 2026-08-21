@@ -1714,6 +1714,11 @@
             "title": "Is Promoted Unscored",
             "default": false
           },
+          "eligibility": {
+            "type": "string",
+            "title": "Eligibility",
+            "default": "meets"
+          },
           "matched_skills": {
             "items": {
               "type": "string"
@@ -1856,6 +1861,11 @@
             "type": "boolean",
             "title": "Is Promoted Unscored",
             "default": false
+          },
+          "eligibility": {
+            "type": "string",
+            "title": "Eligibility",
+            "default": "meets"
           },
           "matched_skills": {
             "items": {

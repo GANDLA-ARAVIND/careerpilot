@@ -230,3 +230,79 @@ def test_stats_on_empty_database(client):
     assert body["total_fetched"] == 0
     assert body["survived"] == 0
     assert body["rejected_by"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Unscored jobs that meet a stated experience requirement lead the list.
+# They previously sat below every scored job, which buried a real 0-years
+# match at the bottom. See app.partition_unscored_by_experience.
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_job(content_hash, *, fit, unscored, years, meets):
+    from datetime import datetime
+
+    from api.services.dashboard import DashboardJob
+    from tests.conftest import make_posting
+
+    job = make_posting(source_job_id=content_hash, title=f"Engineer {content_hash}")
+    return DashboardJob(
+        job=job,
+        content_hash=content_hash,
+        fit_score=fit,
+        verdict="unscored" if unscored else "possible",
+        matched_skills=[] if unscored else ["Python"],
+        missing_skills=[],
+        years_required=years,
+        resume_meets_it=meets,
+        reasoning="",
+        model="m",
+        application_status="new",
+        first_seen=datetime(2026, 8, 1),
+        is_new=False,
+        is_unscored=unscored,
+    )
+
+
+def test_unscored_job_meeting_a_stated_requirement_is_promoted_above_scored_jobs():
+    from api.services.dashboard import partition_unscored_by_experience
+
+    qualifies = _dashboard_job("q", fit=None, unscored=True, years=0.0, meets=True)
+    no_figure = _dashboard_job("n", fit=None, unscored=True, years=None, meets=True)
+    not_met = _dashboard_job("x", fit=None, unscored=True, years=4.0, meets=False)
+
+    promoted, rest = partition_unscored_by_experience([no_figure, not_met, qualifies])
+
+    assert [dj.content_hash for dj in promoted] == ["q"]
+    assert {dj.content_hash for dj in rest} == {"n", "x"}
+
+
+def test_promoted_unscored_jobs_are_ordered_by_the_lowest_requirement_first():
+    from api.services.dashboard import partition_unscored_by_experience
+
+    three = _dashboard_job("three", fit=None, unscored=True, years=3.0, meets=True)
+    zero = _dashboard_job("zero", fit=None, unscored=True, years=0.0, meets=True)
+
+    promoted, _ = partition_unscored_by_experience([three, zero])
+
+    assert [dj.content_hash for dj in promoted] == ["zero", "three"]
+
+
+def test_a_job_with_no_stated_requirement_is_never_promoted():
+    """years_required None means 'not stated', never zero - reading it as a
+    met requirement would promote jobs on absent evidence."""
+    from api.services.dashboard import partition_unscored_by_experience
+
+    promoted, rest = partition_unscored_by_experience(
+        [_dashboard_job("n", fit=None, unscored=True, years=None, meets=True)]
+    )
+
+    assert promoted == []
+    assert len(rest) == 1
+
+
+def test_include_unscored_false_still_drops_promoted_jobs(client, seeded):
+    """Promoted jobs are still unscored jobs - the flag means what it says."""
+    body = client.get("/api/jobs?include_unscored=false").json()
+
+    assert all(not j["is_unscored"] for j in body)

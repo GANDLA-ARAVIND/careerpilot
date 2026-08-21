@@ -283,6 +283,20 @@ GEMINI_RATE_LIMITS = {
 # built to avoid. 15 leaves 5 requests of headroom for a same-day retry.
 STAGE2_TOP_N = 15
 
+# Reject a job whose TITLE states an experience requirement above this many
+# years. NOT a revival of the old MAX_EXPERIENCE_YEARS description cutoff,
+# which was removed for good reason (see docs/decisions.md): that one read a
+# figure out of buried prose and rejected roles the hand-labelled set
+# accepted, costing roughly half the good matches at a 2-year setting.
+#
+# This rule only fires on a figure the employer put in the title itself -
+# "Software Engineer | 8 to 11 Years | Bangalore" - which is an explicit
+# seniority marker, not an inference. 7 is the highest requirement the
+# hand-labelled set ever accepted as a good match, so nothing the labels
+# endorsed can be cut by it. Measured impact when added: 34 of 121
+# survivors rejected, 0 of them labelled good.
+MAX_TITLE_EXPERIENCE_YEARS = 7
+
 RESUME_SKILL_HEADERS = ["technical skills", "skills"]
 RESUME_PROJECT_HEADERS = ["projects"]
 RESUME_STOP_HEADERS = [

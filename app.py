@@ -102,6 +102,40 @@ class DashboardJob:
     is_unscored: bool  # True: both matched_skills and missing_skills came back empty - see agents/analyst.py's is_unscored
 
 
+def partition_unscored_by_experience(
+    unscored: list[DashboardJob],
+) -> tuple[list[DashboardJob], list[DashboardJob]]:
+    """Split unscored jobs into (qualifies, rest).
+
+    "Unscored" means the Analyst found no concrete technical requirements to
+    compare the resume against, so its fit_score is not a real comparison
+    and is never shown or sorted on (see load_dashboard_jobs). That is a
+    statement about the SKILLS comparison only. Experience is parsed
+    separately by filters.parse_max_experience_years and is unaffected by
+    it - so a job that states a requirement AND that the resume meets is
+    carrying real, independent positive evidence even though it could not
+    be scored.
+
+    Burying such a job below 117 scored ones loses that evidence entirely.
+    A Cisco "Software Engineer (Evergreen)" posting stating 0 years, which
+    the resume meets, is a genuinely strong candidate that appeared dead
+    last purely because the Analyst had nothing to compare.
+
+    This does NOT invent a fit_score - the caller orders these ahead of the
+    scored jobs, and they still render as "could not evaluate". Ordering
+    says "worth your attention", not "scored highest".
+
+    A job with no stated requirement (years_required is None) does not
+    qualify: None means "not stated", never "zero", and must not be read as
+    a met requirement. Qualifying jobs are ordered by the requirement
+    ascending, so the lowest bar comes first.
+    """
+    qualifies = [dj for dj in unscored if dj.years_required is not None and dj.resume_meets_it]
+    rest = [dj for dj in unscored if not (dj.years_required is not None and dj.resume_meets_it)]
+    qualifies.sort(key=lambda dj: dj.years_required)
+    return qualifies, rest
+
+
 def load_dashboard_jobs(
     session: Session, kept: list[JobPosting], last_viewed_cutoff: Optional[datetime]
 ) -> tuple[list[DashboardJob], list[DashboardJob], int]:

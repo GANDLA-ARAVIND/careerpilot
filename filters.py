@@ -47,6 +47,53 @@ _PLUS_RE = re.compile(r"(\d+)\+\s*(?:years?|yrs?)", re.IGNORECASE)
 _FLOOR_RE = re.compile(r"(?:minimum|min\.?|at least)\s*(?:of\s*)?(\d+)\+?[\s-]*(?:years?|yrs?)", re.IGNORECASE)
 
 
+# Title-specific experience patterns. Deliberately NOT reusing the
+# description regexes above: those require an "exp"/"experience" anchor
+# within a short window, which is right for a description (full of stray
+# numbers - team sizes, founding years, revenue figures) and wrong for a
+# title. A title is short and curated; "8 to 11 Years" in one can only be
+# the requirement. Verified against real Cisco titles, where the anchored
+# patterns returned None for "8 to 11 Years", "9 - 12 yrs", "4 to 8 yrs"
+# and "(5-7 years)" while correctly reading "Exp: 4-8 Yrs".
+#
+# These run ONLY over the title (see reject_reason_for). The description
+# parser and every stored experience_years_required value are untouched.
+_TITLE_YEARS_RANGE_RE = re.compile(
+    r"(\d+)\s*(?:-|–|—|to)\s*(\d+)\s*\+?\s*(?:years?|yrs?)\b", re.IGNORECASE
+)
+_TITLE_YEARS_PLUS_RE = re.compile(r"(\d+)\s*\+\s*(?:years?|yrs?)\b", re.IGNORECASE)
+_TITLE_YEARS_SINGLE_RE = re.compile(r"(\d+)\s*(?:years?|yrs?)\b", re.IGNORECASE)
+
+
+def parse_title_experience_years(title: str) -> Optional[float]:
+    """Highest experience-years figure stated in a job TITLE, or None.
+
+    Reads the RAW title, deliberately not the delimiter-normalised one.
+    normalize_title_delimiters turns hyphens into spaces, which is exactly
+    what the keyword rules need and exactly what destroys a range: "(5-7
+    years)" becomes "(5 7 years)" and the range pattern can no longer see
+    it. The two normalisations serve opposite purposes and must not be
+    chained.
+
+    Takes the maximum of a range, matching parse_max_experience_years and
+    the stored experience_years_required - so "4 to 8 yrs" reads as 8. For
+    a fresher that is the right direction: the range floor (4) is already
+    out of reach, so the conservative reading does not change the outcome.
+
+    Returns None on an explicit fresher signal, reusing the same
+    _FRESHER_PATTERNS the description parser uses - a title advertising
+    "0-1 years" or "fresher" must never be rejected by this rule.
+    """
+    if any(pattern.search(title) for pattern in _FRESHER_PATTERNS):
+        return None
+
+    years = [float(m.group(2)) for m in _TITLE_YEARS_RANGE_RE.finditer(title)]
+    years += [float(m.group(1)) for m in _TITLE_YEARS_PLUS_RE.finditer(title)]
+    if not years:  # only fall back to a bare "N years" when no richer form matched
+        years = [float(m.group(1)) for m in _TITLE_YEARS_SINGLE_RE.finditer(title)]
+    return max(years) if years else None
+
+
 def parse_max_experience_years(description: str) -> Optional[float]:
     """Best-effort, rule-based extraction of the highest experience-years
     figure implied by a job description. Returns None when nothing anchored
@@ -218,6 +265,16 @@ def reject_reason_for(title: str, location: Optional[str], preferences: Optional
     normalized_title = normalize_title_delimiters(title)
     if _text_contains_any(normalized_title, seniority_keywords) or has_numbered_seniority_level(normalized_title):
         return "seniority"
+    # Experience stated in the TITLE is an explicit seniority signal the
+    # employer chose to put there - distinct from the description-based
+    # cutoff removed earlier (see docs/decisions.md), which inferred a
+    # judgment from buried prose and cost roughly half the good matches.
+    # The ceiling is set above the highest figure the hand-labelled set
+    # ever accepted, so it cannot repeat that mistake.
+    title_years = parse_title_experience_years(title)
+    if title_years is not None and title_years > config.MAX_TITLE_EXPERIENCE_YEARS:
+        return "experience_in_title"
+
     if _text_contains_any(normalized_title, non_engineering_keywords):
         return "non_engineering"
     if not _text_contains_any(title, title_allowlist):

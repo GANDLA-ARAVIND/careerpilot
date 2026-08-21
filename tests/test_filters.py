@@ -5,6 +5,7 @@ from filters import (
     has_numbered_seniority_level,
     location_matches_india,
     normalize_title_delimiters,
+    parse_title_experience_years,
     parse_max_experience_years,
     reject_reason,
     reject_reason_for,
@@ -465,3 +466,69 @@ def test_non_delimiters_are_left_alone():
     never broke matching - normalising them would be scope creep."""
     assert normalize_title_delimiters("Backend/Frontend Engineer") == "Backend/Frontend Engineer"
     assert normalize_title_delimiters("Engineer | Bangalore") == "Engineer | Bangalore"
+
+
+# ---------------------------------------------------------------------------
+# Title-stated experience. Distinct from the description-based cutoff that
+# was removed (docs/decisions.md): this fires only on a figure the employer
+# put in the title, which is an explicit seniority marker, not an inference.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("Software Engineer | Golang, AWS | 8 to 11 Years | Bangalore", 11.0),
+        ("Software Engineer - Backend (8 to 12 Yrs)", 12.0),
+        ("Software Engineer - Go Lang, API Gateway | 9 - 12 yrs", 12.0),
+        ("Embedded Software Engineer - 4 to 8 yrs", 8.0),
+        ("Software Engineer (5-7 years)", 7.0),
+        ("Software Engineer | 12+ Yrs | Bangalore", 12.0),
+        ("Software Engineer - 9+ yrs - ReactJS/Angular & Java", 9.0),
+        ("Software Engineer: Silicon One - 4+ Years", 4.0),
+        ("Software Engineer - Python, React, AI, Exp: 4-8 Yrs, Bangalore", 8.0),
+    ],
+)
+def test_title_experience_is_parsed_from_real_title_forms(title, expected):
+    """Every one of these returned None from the description parser, whose
+    range patterns require an 'exp'/'experience' anchor nearby."""
+    assert parse_title_experience_years(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Software Engineer",
+        "Software Engineer (Evergreen)- Full Time- India Engineering/ UHR",
+        "Backend Engineer Q2-02",
+        "Full Stack Builder (Team of One)",
+        "Computer Scientist 2 (Full Stack)",
+    ],
+)
+def test_titles_without_an_experience_figure_parse_to_none(title):
+    """None means 'not stated', never zero - a title with no figure must not
+    be readable as a met requirement."""
+    assert parse_title_experience_years(title) is None
+
+
+def test_a_fresher_title_is_never_rejected_by_the_experience_rule():
+    """Reuses the description parser's own fresher patterns, so a title
+    advertising entry level cannot be cut by its own year figure."""
+    assert parse_title_experience_years("Software Engineer - Fresher 0-1 years") is None
+    assert reject_reason_for("Software Engineer - Fresher 0-1 years", "Bangalore") is None
+
+
+def test_the_threshold_boundary_is_inclusive_of_the_configured_maximum():
+    """MAX_TITLE_EXPERIENCE_YEARS is the highest figure the hand-labelled
+    set ever accepted, so a job stating exactly that must survive."""
+    assert reject_reason_for("Software Engineer | 7+ years | Python", "Bangalore") is None
+    assert reject_reason_for("Software Engineer (5-7 years)", "Bangalore") is None
+    assert reject_reason_for("Software Engineer | 8 to 11 Years", "Bangalore") == "experience_in_title"
+
+
+def test_range_parsing_survives_delimiter_normalisation_not_being_applied():
+    """The two normalisations serve opposite purposes: the keyword rules
+    need hyphens turned into spaces, and that would destroy '(5-7 years)'.
+    This asserts the experience parser reads the RAW title."""
+    assert normalize_title_delimiters("Software Engineer (5-7 years)") == "Software Engineer (5 7 years)"
+    assert parse_title_experience_years("Software Engineer (5-7 years)") == 7.0

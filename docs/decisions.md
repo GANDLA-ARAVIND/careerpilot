@@ -2374,3 +2374,80 @@ fails-quietly shape as the capped-`total` bug. Second, it only pays for itself o
 where the India subset is a small fraction of a large board; for Cisco and Adobe, already
 configured, it would save little. It is a real option with a real number attached, not a
 default.
+
+## Experience stated in the title, and unscored jobs that were buried
+
+Two problems visible in the same 121-survivor list, fixed together.
+
+### Title-stated experience is now a filter rule (the description-based one still is not)
+
+Dozens of Cisco roles requiring 8-12 years were surviving, because the seniority rules match
+words and these titles state numbers: "8 to 11 Years", "9 - 12 yrs", "4 to 8 yrs",
+"(5-7 years)", "| 12+ Yrs |".
+
+**The existing description parser could not be reused as-is, and finding out why mattered.**
+Its range patterns require an `exp`/`experience` anchor within a short window - deliberately,
+because a description is full of stray numbers (team sizes, founding years, revenue). Against
+real titles it returned `None` for "8 to 11 Years", "9 - 12 yrs", "4 to 8 yrs" and
+"(5-7 years)", while correctly reading "Exp: 4-8 Yrs". So `parse_title_experience_years`
+reuses the same idioms without the anchor, on the grounds that a title is short and curated:
+a number followed by "years" in one can only be the requirement.
+
+**This is not a revival of the removed `MAX_EXPERIENCE_YEARS` cutoff.** That rule inferred a
+judgment from buried prose and, at 2 years, rejected roles the hand-labelled set accepted -
+costing roughly half the good matches. This one fires only on a figure the employer put in
+the title, which is an explicit seniority marker. `MAX_TITLE_EXPERIENCE_YEARS = 7` is set to
+the highest requirement the labels ever accepted, so nothing the labels endorsed can be cut.
+Rejections get their own reason, `experience_in_title`, rather than being folded into
+`seniority`, so the new rule's impact stays visible in the per-rule breakdown.
+
+**Impact, measured and previewed before applying**, as the change was requested:
+
+| threshold | rejected | remaining | labelled-good cut |
+|---|---:|---:|---:|
+| > 5 | 39 | 82 | 0 |
+| **> 7 (chosen)** | **34** | **87** | **0** |
+| > 8 | 16 | 105 | 0 |
+| > 10 | 9 | 112 | 0 |
+
+43 of the 121 survivors stated a figure in the title; all were Cisco except two PhonePe, and
+none was labelled good. Of the top 12 by fit score exactly one is cut - Cisco "Data
+Engineering Application Developer", fit 50, title "7 to 10 years". Archive-wide the rule
+rejects 86 postings and survivors fall 121 -> 87, entirely from Workday (69 -> 35).
+
+**Two implementation bugs worth recording, both caught by testing rather than review.**
+First, the range regex was applied to the *delimiter-normalised* title, and normalisation
+turns "(5-7 years)" into "(5 7 years)" - destroying exactly the hyphen the range pattern
+needs. The two normalisations serve opposite purposes and must not be chained; the experience
+parser reads the raw title, and a test asserts that. Second, the patterns were written into
+the file through a non-raw Python string, so the trailing `\b` was encoded as a literal
+backspace byte (`\x08`) and every pattern silently failed to match. The symptom was every
+title parsing to `None`, which looks exactly like "no titles state experience".
+
+### Unscored jobs that meet a stated requirement now lead the list
+
+The strongest-looking job in the list sat dead last: Cisco "Software Engineer (Evergreen)",
+0 years required, resume meets it, marked *could not evaluate*.
+
+"Unscored" means the Analyst found no concrete technical requirements to compare the resume
+against - a statement about the **skills** comparison alone. The experience judgment is
+separate and was still present. Appending such a job below all 83 scored ones threw away real
+evidence, so `partition_unscored_by_experience` promotes the ones with a stated requirement
+the resume meets to the head of the list.
+
+**The existing rule that unscored jobs never receive a fabricated `fit_score` is untouched.**
+They still show *could not evaluate*; only their position changes. Ordering here says "worth
+your attention", not "scored highest". A job with `years_required is None` is never promoted:
+None means "not stated", never zero, and reading it as a met requirement would promote on
+absent evidence. `include_unscored=false` still drops them all - they are unscored jobs.
+
+**A correction to the preview given before implementing.** That preview said this would
+affect 2 jobs; it affects **1**. The second, Databricks "Full Stack Developer (AI Agents)",
+showed 3.0 years in the preview because that number came from `JobPostingRow.
+experience_years_required` (the description parser), whereas promotion uses the Analyst's own
+paired `(years_required, resume_meets_it)` - and the Analyst recorded no figure for it. Using
+one source's years with the other source's "meets" would be incoherent, so the Analyst's pair
+is the right input, but the preview should have read the field the rule actually uses.
+
+Verified against the live API: `/api/jobs` returns 87 jobs with Cisco Evergreen at #1
+(unscored, 0.0 years, meets), ElevenLabs 78 at #2, GoHighLevel 78 at #3.

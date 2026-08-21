@@ -23,6 +23,7 @@ from app import (  # noqa: F401 - re-exported on purpose, see module docstring
     extract_pdf_text,
     load_applied_jobs,
     load_dashboard_jobs,
+    partition_unscored_by_experience,
     run_filter_pass,
 )
 
@@ -34,5 +35,6 @@ __all__ = [
     "extract_pdf_text",
     "load_applied_jobs",
     "load_dashboard_jobs",
+    "partition_unscored_by_experience",
     "run_filter_pass",
 ]

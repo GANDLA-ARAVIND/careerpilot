@@ -375,3 +375,43 @@ def test_every_job_summary_carries_an_eligibility_value(client, seeded, temp_env
         if job["eligibility"] == "not_met":
             assert job["years_required"] is not None
             assert job["resume_meets_experience"] is False
+
+
+# ---------------------------------------------------------------------------
+# fit_score == 0 means the Analyst found nothing in common with the resume.
+# Hidden from the eligible view - but an UNSCORED job has fit_score None,
+# and null is not zero. Conflating them would remove the promoted job.
+# ---------------------------------------------------------------------------
+
+
+def test_zero_fit_job_is_flagged(client, seeded, temp_env):
+    add_analyst_result(temp_env["engine"], seeded["survivor_a"], model=GEMINI_MODEL_STAGE1, fit_score=0)
+
+    body = client.get("/api/jobs").json()
+
+    assert [j["is_zero_fit"] for j in body] == [True]
+
+
+def test_a_scored_job_above_zero_is_not_flagged(client, seeded, temp_env):
+    add_analyst_result(temp_env["engine"], seeded["survivor_a"], model=GEMINI_MODEL_STAGE1, fit_score=1)
+
+    body = client.get("/api/jobs").json()
+
+    assert [j["is_zero_fit"] for j in body] == [False]
+
+
+def test_an_unscored_job_is_never_flagged_as_zero_fit(client, seeded, temp_env):
+    """The trap: an unscored job has fit_score None. A falsy check would
+    treat it as zero and silently drop the promoted job that leads the
+    list. None == 0 is False in Python, and this pins that."""
+    add_analyst_result(
+        temp_env["engine"], seeded["survivor_a"], model=GEMINI_MODEL_STAGE1,
+        fit_score=0, matched=[], missing=[],   # both empty -> unscored
+    )
+
+    body = client.get("/api/jobs").json()
+
+    assert len(body) == 1
+    assert body[0]["is_unscored"] is True
+    assert body[0]["fit_score"] is None, "an unscored job must not expose a fabricated score"
+    assert body[0]["is_zero_fit"] is False, "null is not zero - this job must stay visible"

@@ -2565,3 +2565,43 @@ meet"). Order: Cisco Evergreen (promoted), then 10 confirmed-eligible scored job
 unconfirmed under their explanatory line, then 2 "could not evaluate". Toggling off restores
 85. Production build passes, TypeScript clean, 604 tests. Still not browser-verified -
 Playwright is not installed here - so this covers logic and data, not rendering.
+
+## fit_score 0 excluded from the eligible view, and the null-is-not-zero trap it sets
+
+An HR posting - Meesho "Trainee - Recruitment Coordinator" - was reaching the morning list.
+It passed every rule filter (the non-engineering keyword list has no "recruitment"), passed
+the experience check, and the Analyst had already said what it was: *"the job is an HR and
+recruitment coordination role"*, fit 0, matched_skills empty. A fit of 0 is a stronger signal
+than the eligibility check, and it was being ignored.
+
+**Impact, shown before applying: removes 3 of 23, all correctly.**
+
+| job | matched | Analyst reasoning |
+|---|---|---|
+| Meesho - Trainee - Recruitment Coordinator | `[]` | HR and recruitment coordination role |
+| Rubrik - Industrial Trainee | `[]` | lacks Chartered Accountancy / financial reporting |
+| Rubrik - Payroll Industrial Trainee | `[]` | no payroll accounting or finance experience |
+
+Every fit-0 job in the archive also has empty `matched_skills` (checked: 0 of 87 have a
+fit of 0 with any matched skill), so "fit 0" and "no overlap at all" are the same set here -
+the two possible readings of the rule do not diverge on current data.
+
+**The trap, and why this is a backend field rather than `fit_score === 0` in the frontend.**
+An *unscored* job has `fit_score` of **null**, and one of them - the promoted Cisco
+"Software Engineer (Evergreen)" - sits at position 1. Written in TypeScript as the obvious
+`!job.fit_score`, this filter would have swallowed null too and silently deleted the job the
+previous change existed to surface. `JobSummary.is_zero_fit` is computed server-side as
+`dj.fit_score == 0`, where Python's `None == 0` is `False`, so the distinction is settled
+once in the place that already treats null-vs-zero as sacred. A test pins it directly:
+an unscored job must come back `is_zero_fit: False` with `fit_score: None`.
+
+**Result.** The default morning view goes 87 -> 85 (status) -> **18 visible**, with one
+notice covering both reasons: *"67 hidden - 64 state an experience requirement you don't
+meet, 3 scored 0 (no overlap with your resume). Show them"*. All 3 unscored jobs remain
+visible, including the promoted one at position 1. 611 tests, production build clean.
+
+**Worth noting for later, not acted on:** the reason an HR role survived the rule filters at
+all is that `NON_ENGINEERING_KEYWORDS` contains "hr" and "human resources" but not
+"recruitment", "recruiter" or "talent". The Analyst caught it, so the outcome is right, but
+it cost an LLM call that a keyword would have saved. Adding those keywords would need the
+same before/after survivor count as any other filter change.

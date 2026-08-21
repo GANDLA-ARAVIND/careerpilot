@@ -49,6 +49,7 @@ def _to_summary(dj, *, promoted: bool = False) -> JobSummary:
         is_unscored=dj.is_unscored,
         is_promoted_unscored=promoted,
         eligibility=experience_eligibility(dj.years_required, dj.resume_meets_it),
+        is_zero_fit=dj.fit_score == 0,  # None == 0 is False in Python - unscored jobs stay False
         matched_skills=dj.matched_skills,
         missing_skills=dj.missing_skills,
         reasoning=dj.reasoning,

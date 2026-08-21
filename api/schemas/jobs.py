@@ -35,6 +35,17 @@ class JobSummary(BaseModel):
     # "meets", so the classification lives here rather than being re-derived
     # in TypeScript where it would drift.
     eligibility: str = "meets"
+    # fit_score is EXACTLY 0 - the Analyst compared the resume and found
+    # nothing in common (every such job in the archive also has empty
+    # matched_skills). A stronger signal than the experience check, and the
+    # Jobs page hides these alongside the ineligible ones.
+    #
+    # Computed here rather than as `fit_score === 0` in the frontend for one
+    # specific reason: an unscored job has fit_score NULL, and a JavaScript
+    # falsy test (!fit_score) would catch null too - silently removing the
+    # promoted "could not evaluate" job that sits at position 1. Null is not
+    # zero, and this field makes that impossible to get wrong downstream.
+    is_zero_fit: bool = False
     matched_skills: list[str] = Field(default_factory=list)
     missing_skills: list[str] = Field(default_factory=list)
     reasoning: str

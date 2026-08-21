@@ -1719,6 +1719,11 @@
             "title": "Eligibility",
             "default": "meets"
           },
+          "is_zero_fit": {
+            "type": "boolean",
+            "title": "Is Zero Fit",
+            "default": false
+          },
           "matched_skills": {
             "items": {
               "type": "string"
@@ -1866,6 +1871,11 @@
             "type": "string",
             "title": "Eligibility",
             "default": "meets"
+          },
+          "is_zero_fit": {
+            "type": "boolean",
+            "title": "Is Zero Fit",
+            "default": false
           },
           "matched_skills": {
             "items": {

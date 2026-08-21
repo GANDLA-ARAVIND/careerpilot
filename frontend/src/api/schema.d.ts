@@ -805,6 +805,11 @@ export interface components {
              * @default meets
              */
             eligibility: string;
+            /**
+             * Is Zero Fit
+             * @default false
+             */
+            is_zero_fit: boolean;
             /** Matched Skills */
             matched_skills?: string[];
             /** Missing Skills */
@@ -869,6 +874,11 @@ export interface components {
              * @default meets
              */
             eligibility: string;
+            /**
+             * Is Zero Fit
+             * @default false
+             */
+            is_zero_fit: boolean;
             /** Matched Skills */
             matched_skills?: string[];
             /** Missing Skills */

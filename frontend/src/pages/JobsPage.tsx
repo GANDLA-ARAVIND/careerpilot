@@ -79,8 +79,17 @@ export function JobsPage() {
   // extracted and the resume does not clear it. "unconfirmed" (no figure
   // found, but the Analyst still judged it unmet) stays visible - nothing
   // concrete bars you - but sorts below the confirmed ones.
-  const ineligible = byStatus.filter((j) => j.eligibility === "not_met")
-  const visible = eligibleOnly ? byStatus.filter((j) => j.eligibility !== "not_met") : byStatus
+  const hiddenNotMet = byStatus.filter((j) => j.eligibility === "not_met")
+  // fit 0 means the Analyst found nothing in common with the resume - a
+  // stronger signal than the experience check, and the reason an HR
+  // "Trainee - Recruitment Coordinator" reached the eligible list at all.
+  // is_zero_fit comes from the backend precisely so this cannot be written
+  // as !fit_score, which would also swallow the unscored (null) jobs.
+  const hiddenZeroFit = byStatus.filter((j) => j.eligibility !== "not_met" && j.is_zero_fit)
+  const ineligible = [...hiddenNotMet, ...hiddenZeroFit]
+  const visible = eligibleOnly
+    ? byStatus.filter((j) => j.eligibility !== "not_met" && !j.is_zero_fit)
+    : byStatus
 
   // Three groups, matching the order /api/jobs already returns. The
   // promoted band is what stops a genuinely strong job being buried: an
@@ -168,8 +177,11 @@ export function JobsPage() {
         {eligibleOnly ? (
           <span className="text-xs text-muted-foreground">
             {ineligible.length === 0
-              ? "nothing hidden — every job here states no requirement, or one you meet"
-              : `${ineligible.length} hidden — they state an experience requirement your resume doesn't meet.`}
+              ? "nothing hidden — every job here is one you're eligible for"
+              : `${ineligible.length} hidden — ${hiddenNotMet.length} state an experience requirement you don't meet` +
+                (hiddenZeroFit.length > 0
+                  ? `, ${hiddenZeroFit.length} scored 0 (no overlap with your resume)`
+                  : "") + "."}
             {ineligible.length > 0 && (
               <button
                 type="button"
@@ -182,7 +194,7 @@ export function JobsPage() {
           </span>
         ) : (
           <span className="text-xs text-muted-foreground">
-            showing all {byStatus.length}, including {ineligible.length} you don&apos;t meet the stated experience for
+            showing all {byStatus.length}, including {ineligible.length} filtered out by default
           </span>
         )}
       </div>

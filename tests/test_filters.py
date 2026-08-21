@@ -4,6 +4,7 @@ from filters import (
     filter_jobs,
     has_numbered_seniority_level,
     location_matches_india,
+    normalize_title_delimiters,
     parse_max_experience_years,
     reject_reason,
     reject_reason_for,
@@ -399,3 +400,68 @@ def test_filter_jobs_accepts_preferences_override():
 
     assert kept_live == []
     assert len(kept_candidate) == 1
+
+
+# ---------------------------------------------------------------------------
+# Title delimiter normalisation. Two distinct bugs, both found via PwC's
+# underscore-delimited titles during an ATS survey - see docs/decisions.md.
+# ---------------------------------------------------------------------------
+
+
+def test_underscore_before_a_keyword_no_longer_defeats_the_seniority_rule():
+    """'_' is a WORD character, so \bsenior\b cannot match inside
+    'IN_Senior'. This exact title survived every rule before the fix."""
+    title = "IN_Senior Associate_ Python Full Stack Developer_GCC_Advisory_Gurgaon"
+    assert reject_reason_for(title, "Gurugram") == "seniority"
+
+
+def test_the_same_title_with_spaces_was_always_caught():
+    """The control: identical words, different punctuation. Before the fix
+    these two disagreed, which is what made the bug obvious."""
+    spaced = "IN Senior Associate Python Full Stack Developer GCC Advisory Gurgaon"
+    underscored = "IN_Senior Associate_ Python Full Stack Developer_GCC_Advisory_Gurgaon"
+    assert reject_reason_for(spaced, "Gurugram") == reject_reason_for(underscored, "Gurugram")
+
+
+def test_a_delimiter_inside_a_multiword_keyword_no_longer_hides_it():
+    """The second, separate failure mode: 'vice president' is a two-word
+    keyword, so ANY delimiter inside it breaks the phrase match - including
+    a plain hyphen, which does not break \b at all."""
+    assert reject_reason_for("Vice-President Engineering", "Bangalore") == "seniority"
+    assert reject_reason_for("Vice\u2013President Engineering", "Bangalore") == "seniority"
+
+
+def test_numbered_seniority_levels_survive_delimiter_normalisation():
+    """has_numbered_seniority_level runs on the normalised title too, so an
+    underscore cannot hide a numbered level either."""
+    assert reject_reason_for("SDE_III Backend Developer", "Bangalore") == "seniority"
+
+
+def test_normalisation_does_not_reject_a_genuine_entry_level_role():
+    """The fix must not over-reject. 'Associate' is not a seniority keyword,
+    and a hyphenated location suffix is not a delimiter problem."""
+    assert reject_reason_for("IN_Associate_ Java Backend Developer_GCC_Advisory_Bangalore", "Bengaluru") is None
+    assert reject_reason_for("Backend Engineer - Bangalore", "Bangalore") is None
+
+
+def test_normalisation_is_scoped_to_the_keyword_rules_only():
+    """The allowlist and location rules deliberately see the RAW title, so
+    normalisation cannot widen what counts as a matching role. A title whose
+    only allowlist match would come from splitting on a delimiter must still
+    be rejected as not_allowlisted."""
+    assert reject_reason_for("Data-Entry Clerk", "Bangalore") == "not_allowlisted"
+
+
+@pytest.mark.parametrize(
+    "char",
+    ["_", "-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212"],
+)
+def test_every_covered_delimiter_is_normalised(char):
+    assert normalize_title_delimiters(f"a{char}b") == "a b"
+
+
+def test_non_delimiters_are_left_alone():
+    """Slashes and pipes are real title punctuation, not joiners, and they
+    never broke matching - normalising them would be scope creep."""
+    assert normalize_title_delimiters("Backend/Frontend Engineer") == "Backend/Frontend Engineer"
+    assert normalize_title_delimiters("Engineer | Bangalore") == "Engineer | Bangalore"

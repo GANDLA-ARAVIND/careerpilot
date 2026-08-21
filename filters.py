@@ -75,6 +75,34 @@ def parse_max_experience_years(description: str) -> Optional[float]:
     return max(years) if years else None
 
 
+# Delimiters that defeat keyword matching when a source uses them to join
+# title fragments. Two distinct failure modes, both verified directly:
+#
+#   1. "_" is a WORD character, so  cannot sit next to it - the seniority
+#      rule silently fails on PwC-style "IN_Senior Associate_ Python
+#      Developer_GCC_Advisory_Gurgaon", while the identical title written
+#      with spaces is correctly rejected. Underscore is the ONLY character
+#      that breaks  this way (checked against ~17 candidates including
+#      en-dash, em-dash, nbsp and non-breaking hyphen, none of which do).
+#   2. ANY delimiter inside a multi-word keyword breaks the phrase match,
+#      including a plain hyphen: "Vice-President" does not match the
+#      "vice president" keyword. This one is not about  at all, which is
+#      why the dash characters are normalised too even though they are
+#      individually harmless for (1).
+#
+# Applied only to the seniority and non-engineering checks - see
+# reject_reason_for. The allowlist and location rules deliberately keep the
+# raw title, so this cannot widen what counts as a matching role or a
+# matching city. See docs/decisions.md.
+_TITLE_DELIMITER_RE = re.compile(r"[_\u2010-\u2015\u2212-]+")  # _ , U+2010..U+2015 dashes, U+2212 minus, ASCII hyphen
+
+
+def normalize_title_delimiters(title: str) -> str:
+    """Collapse delimiter runs to single spaces so keyword rules see word
+    boundaries where a human reading the title would."""
+    return _TITLE_DELIMITER_RE.sub(" ", title)
+
+
 def _text_contains_any(text: str, keywords: list[str]) -> bool:
     lowered = text.lower()
     return any(re.search(rf"\b{re.escape(keyword.lower())}\b", lowered) for keyword in keywords)
@@ -187,9 +215,10 @@ def reject_reason_for(title: str, location: Optional[str], preferences: Optional
     title_allowlist = preferences.title_allowlist if preferences else config.TITLE_ALLOWLIST
     india_location_keywords = preferences.india_location_keywords if preferences else config.INDIA_LOCATION_KEYWORDS
 
-    if _text_contains_any(title, seniority_keywords) or has_numbered_seniority_level(title):
+    normalized_title = normalize_title_delimiters(title)
+    if _text_contains_any(normalized_title, seniority_keywords) or has_numbered_seniority_level(normalized_title):
         return "seniority"
-    if _text_contains_any(title, non_engineering_keywords):
+    if _text_contains_any(normalized_title, non_engineering_keywords):
         return "non_engineering"
     if not _text_contains_any(title, title_allowlist):
         return "not_allowlisted"

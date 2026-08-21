@@ -2234,3 +2234,143 @@ claiming otherwise.
 labelled jobs have not been re-scored. Both need tomorrow's quota. Until then the ranking on
 the dashboard mixes stage-2 verdicts from two different models, which is worth knowing before
 trusting the order.
+
+## Big Four India: only PwC is on a supported ATS, and it is expensive
+
+Checked because Deloitte India produced real interview responses, so it is a genuine target
+rather than a speculative one. All four were probed against every supported ATS before any
+conclusion was drawn.
+
+**Workday tenant discovery used the failure-shape discriminator** recorded in the Workday
+adapter entry above: a nonexistent tenant returns HTTP 422, a real tenant with a wrong site
+returns 404. Probing `{tenant}.wd{N}.myworkdayjobs.com` across 12 `wdN` values for 11 name
+variants (deloitte, deloitteus, deloittein, ey, eyglobal, ernstandyoung, pwc, pwcus, kpmg,
+kpmgus, kpmgllp) found exactly one: **`pwc` on `wd3`**. Greenhouse, Lever and Ashby board
+APIs returned nothing for any of the 11 tokens.
+
+**What the other three actually use** - read off their real careers pages, not assumed:
+
+| firm | ATS | evidence |
+|---|---|---|
+| Deloitte India | **SAP SuccessFactors** | `southasiacareers.deloitte.com` -> `career44.sapsf.com` |
+| EY | **SAP SuccessFactors** | `careers.ey.com` -> `career5.successfactors.eu` |
+| KPMG India | **Oracle Recruiting Cloud** | `ejgk.fa.em2.oraclecloud.com/hcmUI/CandidateExperience` |
+
+None is supported, and none is worth an adapter on this evidence alone - the same standard
+the Workday adapter had to meet (real tenants first, adapter second). Worth noting that
+Deloitte India runs a *separate* South Asia portal from the global `apply.deloitte.com`,
+which is Avature - so a global-page fingerprint would have given the wrong answer for the
+entity actually being targeted.
+
+**PwC, measured properly.** Three real sites on `pwc/wd3`, robots.txt allows the CXS path:
+
+| site | total board | India postings | est. requests |
+|---|---:|---:|---:|
+| `Global_Experienced_Careers` | 4,287 | **1,002** | ~4,502 |
+| `Global_Campus_Careers` | 1,521 | 2 | ~1,598 |
+| `US_Experienced_Careers` | 481 | 0 | ~506 |
+
+The campus site is the one that *sounds* right for fresher hiring and is almost entirely
+useless here: 2 India postings out of 1,521. India volume is all on the experienced site.
+
+**A third location convention, and why the India count nearly came out as zero.** PwC's
+location facet uses bare site names with no country - "Bengaluru Millenia", "Mumbai Shivaji
+Park", "Gurugram 10 C", "Kolkata DN 57". An `\bindia\b` match against it returns nothing,
+which would have wrongly concluded PwC has no India presence. Counting required matching
+Indian *city* names, reusing the project's own `india_location_keywords`. That is now three
+distinct per-tenant location formats seen on Workday ("City, Country", "Country - City", and
+bare site names), reinforcing that the format is tenant-configured and must never be assumed.
+
+**A real filters.py bug, found through PwC's title convention.** PwC India titles are
+underscore-delimited: `IN_Senior Associate_ Python Full Stack Developer_GCC_Advisory_Gurgaon`.
+`_` is a **word character** in regex, so `\bsenior\b` cannot match inside `IN_Senior` - the
+seniority rule silently fails to fire. Verified directly: that exact title returns `None`
+(survives), while the same words with spaces instead of underscores return `seniority`.
+Normalising delimiters before filtering moves PwC's India rejections from 308 to 705 on the
+seniority rule. This is not a PwC quirk to special-case; it is a latent hole in a rule the
+whole pipeline depends on, and any source using underscores, en-dashes or em-dashes as title
+delimiters bypasses it the same way. **Not fixed in this pass** - it was found during an ATS
+survey and changing filter behaviour would silently re-rank the existing archive, which
+deserves its own change with a before/after survivor count.
+
+**Yield, and the verdict.** Of 1,000 India postings examined (via 52 facet-filtered requests,
+not a full fetch), **21 unique roles survive the rule filters** once delimiters are
+normalised and duplicates collapsed - mostly "Associate" and "Sr Associate" developer roles
+in Bengaluru, Gurugram, Kolkata and Noida. Cost to obtain them nightly would be ~4,502
+requests, because the adapter fetches the whole board and applies no server-side filter.
+
+That is **~214 requests per surviving role**, against 32 for Cisco, 73 for Harris and 93 for
+Adobe - by a wide margin the worst ratio of any tenant surveyed. At the measured ~1.3
+s/request it is also roughly **98 minutes**, which on its own exceeds the 90-minute
+`timeout-minutes` on the nightly workflow. PwC is therefore not added: it is a viable
+on-demand target (`python -m adapters.workday "PwC India" pwc wd3
+Global_Experienced_Careers`), not a nightly one, unless the adapter gains the ability to
+apply a location facet server-side - which the facet probe above shows the API supports and
+would cut the cost by roughly 4x.
+
+## Title delimiter normalisation: a real bug with, as it turned out, zero current impact
+
+Fixing the hole found during the Big Four survey. The impact was measured against the real
+archive **before** the change, because "fix a filter rule" and "silently re-rank the whole
+archive" are the same action here.
+
+**Only underscore actually breaks `\b`** - checked against 17 candidate characters, not
+assumed. `\b` sits between a word char and a non-word char, and Python's `\w` is
+`[a-zA-Z0-9_]` plus Unicode letters/digits, so en-dash, em-dash, non-breaking hyphen, nbsp,
+middot, bullet, minus and the rest are all already safe. The original framing (that dashes
+break `\b` too) was wrong.
+
+**But there is a second, unrelated failure mode that dashes DO cause**, and it is why they
+are normalised anyway: any delimiter *inside* a multi-word keyword breaks the phrase match.
+`"Vice-President Engineering"` does not match the `vice president` keyword - with a plain
+ASCII hyphen, nothing to do with `\b`. Two bugs, one fix.
+
+**Impact on the existing archive: exactly zero, verified both directions.** Recomputing all
+12,158 stored postings under current rules and under normalised titles:
+
+| | count |
+|---|---:|
+| survivors before | 121 |
+| survivors after | 121 |
+| currently surviving that would become rejected | **0** |
+| currently rejected that would newly survive | **0** |
+
+A zero result is as likely to mean "broken analysis" as "no impact", so it was checked
+directly: only **9** titles in the whole archive contain an underscore (all Lever, all
+already rejected on other rules - "Manager", "Team Leader", "Legal"), while **5,422** contain
+a dash, so the normalisation is genuinely exercised on thousands of titles and simply changes
+no verdict. **So no, this has not been leaking senior roles from Greenhouse, Lever or Ashby.**
+The bug was real but latent - it needed a source that writes `IN_Senior`, and the only one
+found is PwC, which is not a configured source.
+
+**Scope, deliberately narrow.** Normalisation is applied only to the seniority and
+non-engineering keyword checks. The allowlist and location rules keep the raw title, so this
+cannot widen what counts as a matching role or a matching city - a test asserts that
+`"Data-Entry Clerk"` is still `not_allowlisted` rather than becoming a "Data Entry" match.
+
+Post-fix survivor count by source, unchanged at 121 total: workday 69, greenhouse 20,
+ashby 19, lever 13.
+
+## PwC declined as a source, and what a server-side location facet would change
+
+Not added: ~4,502 requests for 21 surviving roles is ~214 requests per survivor against 32
+for Cisco, and at the measured ~1.3 s/request the ~98 minutes exceeds the nightly workflow's
+own 90-minute `timeout-minutes`.
+
+**The facet option, costed rather than hand-waved.** The Workday CXS API accepts
+`appliedFacets` server-side - already proven here, since the 1,002 India postings were
+counted with exactly that mechanism in 52 requests instead of 4,502. Adding a
+`workday_facets` field to `CompanyConfig` and passing it through `_fetch_listing_page` would
+bring PwC to roughly **1,002 detail fetches + ~51 listing requests = ~1,053 requests, about
+23 minutes** - inside the workflow timeout, and ~50 requests per survivor, which is between
+Cisco (32) and Harris (73) rather than off the scale.
+
+Deliberately NOT built yet, for two reasons worth stating. First, facet IDs are opaque
+per-tenant hashes (`e57e6863118d01f411ec8989342b58c9` for one PwC "Ahmedabad" value, and
+there are 29 India location values on that one board) - they would have to be discovered and
+pinned in `companies.yaml`, and they can change when a tenant reconfigures its locations,
+turning a silent facet mismatch into a silently smaller fetch. That is the same
+fails-quietly shape as the capped-`total` bug. Second, it only pays for itself on tenants
+where the India subset is a small fraction of a large board; for Cisco and Adobe, already
+configured, it would save little. It is a real option with a real number attached, not a
+default.

@@ -22,6 +22,14 @@ class JobSummary(BaseModel):
     fit_score: Optional[int] = None
     verdict: str
     is_unscored: bool
+    # True for an unscored job that states an experience requirement the
+    # resume meets - real evidence that survives the Analyst being unable to
+    # score the skills. The backend decides this (see
+    # app.partition_unscored_by_experience) rather than leaving the frontend
+    # to re-derive the predicate, so the two cannot drift apart. Still
+    # unscored: fit_score stays null and the card still reads "could not
+    # evaluate"; this only says where it belongs in the list.
+    is_promoted_unscored: bool = False
     matched_skills: list[str] = Field(default_factory=list)
     missing_skills: list[str] = Field(default_factory=list)
     reasoning: str

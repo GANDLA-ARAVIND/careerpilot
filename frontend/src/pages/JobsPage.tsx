@@ -71,8 +71,23 @@ export function JobsPage() {
     [jobs, statuses],
   )
 
+  // Three groups, matching the order /api/jobs already returns. The
+  // promoted band is what stops a genuinely strong job being buried: an
+  // unscored posting stating an experience requirement the resume meets is
+  // real evidence, and it used to land in "Could not evaluate" at the very
+  // bottom regardless of where the API put it. The backend sets the flag
+  // (see api/schemas/jobs.py) rather than this file re-deriving the rule.
+  const promoted = visible.filter((j) => j.is_promoted_unscored)
   const scored = visible.filter((j) => !j.is_unscored)
-  const unscored = visible.filter((j) => j.is_unscored)
+  const unscored = visible.filter((j) => j.is_unscored && !j.is_promoted_unscored)
+
+  // A status filter silently removing jobs is how two applied-to roles
+  // "vanished" - the chips showed their counts, but nothing said the list
+  // was shorter because of them. Never hide without saying so.
+  const hiddenByFilter = jobs.length - visible.length
+  const hiddenBreakdown = APPLICATION_STATUSES.filter((st) => !statuses.includes(st))
+    .map((st) => ({ status: st, count: jobs.filter((j) => j.application_status === st).length }))
+    .filter((entry) => entry.count > 0)
 
   return (
     <div>
@@ -121,6 +136,16 @@ export function JobsPage() {
         )}
       </div>
 
+      {hiddenByFilter > 0 && (
+        <p className="mb-4 text-xs text-muted-foreground">
+          {hiddenByFilter} job{hiddenByFilter === 1 ? "" : "s"} hidden by the status filter
+          {hiddenBreakdown.length > 0 && (
+            <> — {hiddenBreakdown.map((e) => `${e.count} ${e.status}`).join(", ")}</>
+          )}
+          . Click a status above to include it.
+        </p>
+      )}
+
       {error && <ErrorState error={error} onRetry={reload} />}
 
       {loading && !error && (
@@ -144,6 +169,26 @@ export function JobsPage() {
 
       {!loading && !error && visible.length > 0 && (
         <div className="space-y-3">
+          {promoted.length > 0 && (
+            <div className="mb-1">
+              <p className="mb-2 text-xs text-muted-foreground">
+                Not scored — the Analyst found no technical requirements to compare against — but the posting
+                states an experience requirement your resume meets, so {promoted.length === 1 ? "it is" : "they are"}{" "}
+                shown here rather than at the bottom.
+              </p>
+              <div className="space-y-3">
+                {promoted.map((job) => (
+                  <JobCard
+                    key={job.content_hash}
+                    job={job}
+                    pending={pendingHash === job.content_hash}
+                    onStatusChange={(next) => handleStatusChange(job, next)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           {scored.map((job) => (
             <JobCard
               key={job.content_hash}

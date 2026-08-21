@@ -13,10 +13,23 @@ export interface paths {
         };
         /**
          * List Jobs
-         * @description Ranked survivors, best fit first. Unscored jobs (the Analyst found
-         *     no concrete requirements to compare against) are appended after the
-         *     scored ones rather than sorted among them - their fit_score is not a
-         *     real comparison and must not compete for a ranking position.
+         * @description Ranked survivors, best fit first, with one deliberate exception.
+         *
+         *     Unscored jobs (the Analyst found no concrete requirements to compare
+         *     against) still never receive a fit_score and are never sorted among the
+         *     scored ones - their score is not a real comparison. But "unscored" is a
+         *     statement about the SKILLS comparison alone. An unscored job that states
+         *     an experience requirement the resume meets carries real, independent
+         *     evidence, and appending it below every scored job threw that away: a
+         *     Cisco posting stating 0 years, met, sat dead last.
+         *
+         *     So those specific jobs lead the list, still labelled "could not
+         *     evaluate" - see app.partition_unscored_by_experience. Ordering here
+         *     says "worth your attention", not "scored highest". Everything else is
+         *     unchanged: scored jobs by fit descending, remaining unscored jobs last.
+         *
+         *     include_unscored=False drops all of them, promoted ones included - they
+         *     are unscored jobs, and the flag means what it says.
          */
         get: operations["list_jobs_api_jobs_get"];
         put?: never;
@@ -674,7 +687,7 @@ export interface components {
             /** Ats */
             ats: string;
             /** Token */
-            token: string;
+            token?: string | null;
             /** Jobs Fetched */
             jobs_fetched: number;
             /** Survivors */
@@ -782,6 +795,11 @@ export interface components {
             verdict: string;
             /** Is Unscored */
             is_unscored: boolean;
+            /**
+             * Is Promoted Unscored
+             * @default false
+             */
+            is_promoted_unscored: boolean;
             /** Matched Skills */
             matched_skills?: string[];
             /** Missing Skills */
@@ -836,6 +854,11 @@ export interface components {
             verdict: string;
             /** Is Unscored */
             is_unscored: boolean;
+            /**
+             * Is Promoted Unscored
+             * @default false
+             */
+            is_promoted_unscored: boolean;
             /** Matched Skills */
             matched_skills?: string[];
             /** Missing Skills */

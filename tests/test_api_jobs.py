@@ -306,3 +306,24 @@ def test_include_unscored_false_still_drops_promoted_jobs(client, seeded):
     body = client.get("/api/jobs?include_unscored=false").json()
 
     assert all(not j["is_unscored"] for j in body)
+
+
+def test_promoted_unscored_job_is_flagged_for_the_frontend(client, temp_env):
+    """The backend states which unscored jobs were promoted rather than
+    leaving the frontend to re-derive the rule - the two would drift, and
+    the frontend re-partitioning the list is exactly what silently undid
+    the promotion once already."""
+    body = client.get("/api/jobs").json()
+
+    for job in body:
+        assert "is_promoted_unscored" in job
+        if job["is_promoted_unscored"]:
+            assert job["is_unscored"] is True          # still unscored
+            assert job["fit_score"] is None            # still no fabricated score
+            assert job["years_required"] is not None   # never promoted on absent evidence
+            assert job["resume_meets_experience"] is True
+
+
+def test_a_scored_job_is_never_flagged_as_promoted(client, seeded):
+    body = client.get("/api/jobs").json()
+    assert all(not j["is_promoted_unscored"] for j in body if not j["is_unscored"])

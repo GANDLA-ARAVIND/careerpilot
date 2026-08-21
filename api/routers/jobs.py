@@ -31,7 +31,7 @@ from db import JobPostingRow
 router = APIRouter(prefix="/api", tags=["jobs"])
 
 
-def _to_summary(dj) -> JobSummary:
+def _to_summary(dj, *, promoted: bool = False) -> JobSummary:
     return JobSummary(
         content_hash=dj.content_hash,
         company=dj.job.company,
@@ -42,6 +42,7 @@ def _to_summary(dj) -> JobSummary:
         fit_score=dj.fit_score,
         verdict=dj.verdict,
         is_unscored=dj.is_unscored,
+        is_promoted_unscored=promoted,
         matched_skills=dj.matched_skills,
         missing_skills=dj.missing_skills,
         reasoning=dj.reasoning,
@@ -104,9 +105,10 @@ def list_jobs(
         selected = [dj for dj in selected if dj.application_status in allowed]
 
     applied = _applied_at_by_hash(session, [dj.content_hash for dj in selected])
+    promoted_hashes = {dj.content_hash for dj in promoted}
     summaries = []
     for dj in selected:
-        summary = _to_summary(dj)
+        summary = _to_summary(dj, promoted=dj.content_hash in promoted_hashes)
         summary.applied_at = applied.get(dj.content_hash)
         summaries.append(summary)
     return summaries

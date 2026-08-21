@@ -2451,3 +2451,71 @@ is the right input, but the preview should have read the field the rule actually
 
 Verified against the live API: `/api/jobs` returns 87 jobs with Cisco Evergreen at #1
 (unscored, 0.0 years, meets), ElevenLabs 78 at #2, GoHighLevel 78 at #3.
+
+## Two "it works in the API" bugs that were both really frontend bugs
+
+Reported after a restart: the promoted Cisco job was still at the bottom, and the two
+highest-scoring jobs had vanished. `/api/jobs` was correct in both cases - 87 jobs, Cisco
+Evergreen first, ElevenLabs and GoHighLevel present at 78 each. The lesson is the same one
+twice: **verifying an API response is not verifying what the user sees.**
+
+### The promotion was undone by the frontend re-partitioning the list
+
+`api/routers/jobs.py` returns promoted-unscored first, then scored, then the rest. But
+`JobsPage.tsx` threw that ordering away:
+
+```
+const scored = visible.filter((j) => !j.is_unscored)
+const unscored = visible.filter((j) => j.is_unscored)
+```
+
+and rendered `unscored` in a "Could not evaluate" section pinned to the bottom. Any unscored
+job landed there regardless of its position in the response, so the backend change was
+invisible by construction.
+
+**Fixed by having the backend state the fact, not by duplicating the rule in the frontend.**
+`JobSummary` gained `is_promoted_unscored`, set from the same
+`partition_unscored_by_experience` call that does the ordering. The frontend groups on the
+flag. Re-deriving the predicate in TypeScript would have worked today and drifted the first
+time the rule changed - the same reasoning that makes the API types generated rather than
+hand-written.
+
+### The two "vanished" jobs were filtered out by their own status - and nothing said so
+
+Both are still stored, both still pass every filter, and the new title-experience rule does
+not touch them (neither title states a figure). They are simply the **only two rows in the
+archive with `application_status = 'applied'`** - and `JobsPage` defaults to
+`["new", "interviewing"]`:
+
+```
+const DEFAULT_STATUSES: ApplicationStatus[] = ["new", "interviewing"]
+```
+
+So the top two jobs disappeared because the user had applied to them. That default is
+reasonable - a "what should I apply to" list is more useful without the ones already done -
+and it has not been changed. What was wrong is that it happened **silently**: 87 jobs became
+85 with nothing on screen accounting for the difference. The per-status chips did show
+"applied 2", but a count on a chip is not the same as saying the list in front of you is
+shorter than the data behind it.
+
+`JobsPage` now renders, whenever a filter is hiding anything: *"2 jobs hidden by the status
+filter — 2 applied. Click a status above to include it."* Same principle the metrics panel
+and the evaluation page already follow: never quietly present a reduced view as the whole
+picture.
+
+### Verification, and its limit
+
+Confirmed against the real database by replaying `JobsPage`'s exact grouping over the live
+`/api/jobs` payload in Node:
+
+| filter | visible | rendered order |
+|---|---|---|
+| default `['new','interviewing']` | 85 of 87, notice: *2 hidden — 2 applied* | 1 Cisco (promoted), 2 Adobe 55, 3 Sarvam 52 ... |
+| no filter | 87 of 87, no notice | 1 Cisco (promoted), 2 ElevenLabs 78, 3 GoHighLevel 78 ... |
+
+The production build passes and TypeScript is clean. **Not verified in a real browser** -
+Playwright is not installed in this environment and pulling it plus browser binaries was not
+worth it for a change this size. Replaying the component's grouping over the real payload
+covers the logic and the data; it does not cover rendering. Stated rather than glossed,
+because "the API returns the right thing" is precisely the claim that was already wrong twice
+here.

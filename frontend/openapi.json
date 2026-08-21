@@ -12,7 +12,7 @@
           "jobs"
         ],
         "summary": "List Jobs",
-        "description": "Ranked survivors, best fit first. Unscored jobs (the Analyst found\nno concrete requirements to compare against) are appended after the\nscored ones rather than sorted among them - their fit_score is not a\nreal comparison and must not compete for a ranking position.",
+        "description": "Ranked survivors, best fit first, with one deliberate exception.\n\nUnscored jobs (the Analyst found no concrete requirements to compare\nagainst) still never receive a fit_score and are never sorted among the\nscored ones - their score is not a real comparison. But \"unscored\" is a\nstatement about the SKILLS comparison alone. An unscored job that states\nan experience requirement the resume meets carries real, independent\nevidence, and appending it below every scored job threw that away: a\nCisco posting stating 0 years, met, sat dead last.\n\nSo those specific jobs lead the list, still labelled \"could not\nevaluate\" - see app.partition_unscored_by_experience. Ordering here\nsays \"worth your attention\", not \"scored highest\". Everything else is\nunchanged: scored jobs by fit descending, remaining unscored jobs last.\n\ninclude_unscored=False drops all of them, promoted ones included - they\nare unscored jobs, and the flag means what it says.",
         "operationId": "list_jobs_api_jobs_get",
         "parameters": [
           {
@@ -1453,7 +1453,14 @@
             "title": "Ats"
           },
           "token": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Token"
           },
           "jobs_fetched": {
@@ -1469,7 +1476,6 @@
         "required": [
           "name",
           "ats",
-          "token",
           "jobs_fetched",
           "survivors"
         ],
@@ -1703,6 +1709,11 @@
             "type": "boolean",
             "title": "Is Unscored"
           },
+          "is_promoted_unscored": {
+            "type": "boolean",
+            "title": "Is Promoted Unscored",
+            "default": false
+          },
           "matched_skills": {
             "items": {
               "type": "string"
@@ -1840,6 +1851,11 @@
           "is_unscored": {
             "type": "boolean",
             "title": "Is Unscored"
+          },
+          "is_promoted_unscored": {
+            "type": "boolean",
+            "title": "Is Promoted Unscored",
+            "default": false
           },
           "matched_skills": {
             "items": {

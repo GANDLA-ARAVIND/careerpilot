@@ -111,11 +111,17 @@ class EvaluationResponse(BaseModel):
 
 
 class ArchitectureStage(BaseModel):
+    """One conceptual step. `node` names the LangGraph node it actually runs
+    inside - the orchestrator has only three, and fetch/persist/filter are
+    deliberately bundled into one (see orchestrator.py's module docstring),
+    so a stage list alone would misrepresent the real graph."""
+
     key: str
     name: str
     description: str
     uses_llm: bool
     module: str
+    node: str
 
 
 class ArchitectureAgent(BaseModel):
@@ -140,6 +146,13 @@ class ArchitectureResponse(BaseModel):
     agents: list[ArchitectureAgent]
     edges: list[ArchitectureEdge]
     principles: list[str]
+    # The real LangGraph node names, in execution order. Stated separately
+    # from `stages` so the graph cannot drift from the prose describing it.
+    orchestrator_nodes: list[str] = Field(default_factory=list)
+    # Things deliberately NOT in the pipeline, with the reason. Omitting
+    # them entirely was how a removed embedding stage stayed on this page
+    # long after it stopped running.
+    not_in_pipeline: list[str] = Field(default_factory=list)
 
 
 class QuotaModel(BaseModel):

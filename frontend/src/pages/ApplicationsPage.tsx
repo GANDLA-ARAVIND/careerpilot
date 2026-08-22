@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import { ExternalLink } from "lucide-react"
 
-import type { JobSummary } from "@/api/client"
+import type { AppliedJobsResponse } from "@/api/client"
 import { api } from "@/api/client"
 import { EmptyState, ErrorState, PageHeader } from "@/components/PageHeader"
 import { Badge } from "@/components/ui/badge"
@@ -17,33 +17,24 @@ const STATUS_STYLES: Record<string, string> = {
 }
 
 export function ApplicationsPage() {
-  // Every job, then filtered client-side on applied_at. Listing by
-  // applied_at rather than by current status is deliberate and mirrors the
-  // backend's own rule: a job applied to and later marked rejected is
-  // still a job that was applied to, and dropping it would erase the
-  // record of having applied at all.
-  const { data, error, loading, reload } = useApi<JobSummary[]>(() => api.jobs.list(), [])
+  // /api/applications, NOT jobs.list(). The old version derived this page
+  // from the survivor list, so a job applied to that later failed a rule
+  // filter vanished from the application record - and filters do change.
+  // The backend now queries applied_at directly, independent of filter
+  // state; see api/routers/jobs.py's list_applications.
+  const { data, error, loading, reload } = useApi<AppliedJobsResponse>(() => api.applications(), [])
 
-  const applied = useMemo(() => {
-    if (!data) return []
-    return data
-      .filter((job) => job.applied_at != null)
-      .sort((a, b) => (a.applied_at! < b.applied_at! ? 1 : -1))
-  }, [data])
-
+  const applied = useMemo(() => (data?.items ?? []).filter((j) => j.applied_at != null), [data])
   // Marked applied before applied_at existed as a column, so the date was
   // never recorded. Surfaced separately rather than silently omitted or
   // given a made-up date.
-  const undated = useMemo(
-    () => (data ?? []).filter((job) => job.applied_at == null && job.application_status === "applied"),
-    [data],
-  )
+  const undated = useMemo(() => (data?.items ?? []).filter((j) => j.applied_at == null), [data])
 
   return (
     <div>
       <PageHeader
         title="Applications"
-        description="Everything you've applied to, most recent first."
+        description="Everything you've applied to, most recent first. Kept independently of the job filters."
         actions={
           <button type="button" onClick={reload} className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent">
             Refresh
@@ -79,9 +70,9 @@ export function ApplicationsPage() {
                 >
                   {job.application_status}
                 </span>
-                {job.fit_score != null && (
-                  <Badge variant="secondary" className="text-[0.65rem]">
-                    fit {job.fit_score}
+                {!job.still_a_survivor && (
+                  <Badge variant="outline" className="text-[0.65rem] font-normal text-muted-foreground">
+                    no longer passes current filters
                   </Badge>
                 )}
               </div>

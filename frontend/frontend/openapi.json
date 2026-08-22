@@ -75,6 +75,28 @@
         }
       }
     },
+    "/api/applications": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List Applications",
+        "description": "Everything applied to, newest first, independent of filter state.\n\nQueried straight off job_postings rather than through /api/jobs, which\nreturns only current rule-filter survivors. Deriving the application\nrecord from the survivor list meant a job could vanish from your own\nhistory because a filter changed weeks later - the record of having\napplied is not contingent on today's configuration.\n\nIncluded when applied_at is set OR the status is still \"applied\": the\nsecond clause catches rows marked applied before applied_at existed as\na column. A row marked \"rejected\" that was never applied to is excluded\n- that is an outcome you never had, not a lost application.\n\nOrdered by applied_at descending with the undated rows last, since\nthere is no real date to sort them by.",
+        "operationId": "list_applications_api_applications_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedJobsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/rejected": {
       "get": {
         "tags": [
@@ -871,7 +893,7 @@
           "meta"
         ],
         "summary": "Architecture",
-        "description": "A structured description of the pipeline, for the frontend to render\nas a diagram. Static by nature - this describes the system's design, not\nits runtime state, and hardcoding it here rather than in the React app\nkeeps one source of truth for what the pipeline actually is.",
+        "description": "A structured description of the pipeline, for the frontend to render\nas a diagram. The shape lives here rather than in the React app so there\nis one source of truth for what the pipeline actually is.\n\nMostly static, with the funnel figures counted live - see below. Two\naccuracy failures this endpoint previously had, both worth naming since\nthis is the page shown to people evaluating the work: it listed an\n\"Embedding rank\" stage between filter and stage 1 that had been removed\nfrom the live path (measured at random on the label set), and a\nprinciple quoting \"~30 jobs a night\" long after the real survivor count\nhad moved. Anything countable here is now counted.",
         "operationId": "architecture_api_meta_architecture_get",
         "responses": {
           "200": {
@@ -1184,6 +1206,91 @@
         "type": "object",
         "title": "AgentsResponse"
       },
+      "AppliedJobSummary": {
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "company": {
+            "type": "string",
+            "title": "Company"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "application_status": {
+            "type": "string",
+            "title": "Application Status"
+          },
+          "applied_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "still_a_survivor": {
+            "type": "boolean",
+            "title": "Still A Survivor",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "content_hash",
+          "company",
+          "title",
+          "url",
+          "application_status"
+        ],
+        "title": "AppliedJobSummary",
+        "description": "One job you applied to.\n\nDeliberately NOT derived from /api/jobs. That endpoint returns current\nrule-filter survivors, so a job applied to that later fails a filter\nsilently disappeared from the application record - and filters do\nchange (a title-experience rule added later rejected 34 postings in one\npass). Application history is a record of what you did; it must not be\ncontingent on today's filter configuration.\n\napplied_at is nullable: two rows were marked applied before the column\nexisted, and inventing a date for them would be worse than showing none."
+      },
+      "AppliedJobsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AppliedJobSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "dated_count": {
+            "type": "integer",
+            "title": "Dated Count",
+            "default": 0
+          },
+          "undated_count": {
+            "type": "integer",
+            "title": "Undated Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "AppliedJobsResponse"
+      },
       "ArchitectureAgent": {
         "properties": {
           "name": {
@@ -1275,6 +1382,20 @@
             },
             "type": "array",
             "title": "Principles"
+          },
+          "orchestrator_nodes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Orchestrator Nodes"
+          },
+          "not_in_pipeline": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Not In Pipeline"
           }
         },
         "type": "object",
@@ -1308,6 +1429,10 @@
           "module": {
             "type": "string",
             "title": "Module"
+          },
+          "node": {
+            "type": "string",
+            "title": "Node"
           }
         },
         "type": "object",
@@ -1316,9 +1441,11 @@
           "name",
           "description",
           "uses_llm",
-          "module"
+          "module",
+          "node"
         ],
-        "title": "ArchitectureStage"
+        "title": "ArchitectureStage",
+        "description": "One conceptual step. `node` names the LangGraph node it actually runs\ninside - the orchestrator has only three, and fetch/persist/filter are\ndeliberately bundled into one (see orchestrator.py's module docstring),\nso a stage list alone would misrepresent the real graph."
       },
       "AskRequest": {
         "properties": {

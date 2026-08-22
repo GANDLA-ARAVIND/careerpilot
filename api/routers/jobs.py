@@ -11,11 +11,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import or_, func
 from sqlalchemy.orm import Session
 
 from api.deps import get_app_engine, get_session
 from api.schemas.jobs import (
+    AppliedJobSummary,
+    AppliedJobsResponse,
     JobDetail,
     JobSummary,
     RejectedJob,
@@ -32,6 +34,7 @@ from api.services.dashboard import (
 )
 from app import STATUSES, read_last_viewed, set_application_status
 from db import JobPostingRow
+from filters import reject_reason_for
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 
@@ -119,6 +122,55 @@ def list_jobs(
         summary.applied_at = applied.get(dj.content_hash)
         summaries.append(summary)
     return summaries
+
+
+@router.get("/applications", response_model=AppliedJobsResponse)
+def list_applications(session: Session = Depends(get_session)) -> AppliedJobsResponse:
+    """Everything applied to, newest first, independent of filter state.
+
+    Queried straight off job_postings rather than through /api/jobs, which
+    returns only current rule-filter survivors. Deriving the application
+    record from the survivor list meant a job could vanish from your own
+    history because a filter changed weeks later - the record of having
+    applied is not contingent on today's configuration.
+
+    Included when applied_at is set OR the status is still "applied": the
+    second clause catches rows marked applied before applied_at existed as
+    a column. A row marked "rejected" that was never applied to is excluded
+    - that is an outcome you never had, not a lost application.
+
+    Ordered by applied_at descending with the undated rows last, since
+    there is no real date to sort them by."""
+    rows = (
+        session.query(JobPostingRow)
+        .filter(
+            or_(
+                JobPostingRow.applied_at.isnot(None),
+                JobPostingRow.application_status == "applied",
+            )
+        )
+        .all()
+    )
+    rows.sort(key=lambda r: (r.applied_at is None, -(r.applied_at.timestamp() if r.applied_at else 0)))
+
+    items = [
+        AppliedJobSummary(
+            content_hash=row.content_hash,
+            company=row.company,
+            title=row.title,
+            location=row.location,
+            url=row.url,
+            application_status=row.application_status,
+            applied_at=row.applied_at,
+            still_a_survivor=reject_reason_for(row.title, row.location) is None,
+        )
+        for row in rows
+    ]
+    return AppliedJobsResponse(
+        items=items,
+        dated_count=sum(1 for i in items if i.applied_at is not None),
+        undated_count=sum(1 for i in items if i.applied_at is None),
+    )
 
 
 @router.get("/jobs/rejected", response_model=RejectedPage)

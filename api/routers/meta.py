@@ -34,6 +34,7 @@ from api.schemas.meta import (
     RuntimeResponse,
 )
 from api.services import runtime as runtime_service
+from api.services.dashboard import run_filter_pass
 from api.services.evaluation import CAVEATS, read_snapshot
 from db import DEFAULT_DB_PATH, RunAgentMetricsRow, RunMetricsRow, last_successful_run
 
@@ -183,11 +184,24 @@ def evaluation() -> EvaluationResponse:
 
 
 @router.get("/architecture", response_model=ArchitectureResponse)
-def architecture() -> ArchitectureResponse:
+def architecture(session: Session = Depends(get_session)) -> ArchitectureResponse:
     """A structured description of the pipeline, for the frontend to render
-    as a diagram. Static by nature - this describes the system's design, not
-    its runtime state, and hardcoding it here rather than in the React app
-    keeps one source of truth for what the pipeline actually is."""
+    as a diagram. The shape lives here rather than in the React app so there
+    is one source of truth for what the pipeline actually is.
+
+    Mostly static, with the funnel figures counted live - see below. Two
+    accuracy failures this endpoint previously had, both worth naming since
+    this is the page shown to people evaluating the work: it listed an
+    "Embedding rank" stage between filter and stage 1 that had been removed
+    from the live path (measured at random on the label set), and a
+    principle quoting "~30 jobs a night" long after the real survivor count
+    had moved. Anything countable here is now counted."""
+    # Counted live. A hardcoded figure here read "~30 jobs a night" long
+    # after the real number had moved, on the page whose whole purpose is
+    # describing the system accurately.
+    filter_result = run_filter_pass(session)
+    survivors = len(filter_result.kept)
+    total = sum(filter_result.fetched_by_company.values())
     return ArchitectureResponse(
         stages=[
             ArchitectureStage(
@@ -199,6 +213,7 @@ def architecture() -> ArchitectureResponse:
                 ),
                 uses_llm=False,
                 module="adapters/",
+                node="fetch_persist_filter",
             ),
             ArchitectureStage(
                 key="normalize",
@@ -206,6 +221,7 @@ def architecture() -> ArchitectureResponse:
                 description="Map every source's payload onto one JobPosting shape; dedupe on content_hash.",
                 uses_llm=False,
                 module="models.py, db.py",
+                node="fetch_persist_filter",
             ),
             ArchitectureStage(
                 key="filter",
@@ -216,13 +232,7 @@ def architecture() -> ArchitectureResponse:
                 ),
                 uses_llm=False,
                 module="filters.py",
-            ),
-            ArchitectureStage(
-                key="rank",
-                name="Embedding rank",
-                description="Local sentence-transformers cosine similarity against the resume. Cheap, offline.",
-                uses_llm=False,
-                module="ranking.py",
+                node="fetch_persist_filter",
             ),
             ArchitectureStage(
                 key="stage1",
@@ -230,6 +240,7 @@ def architecture() -> ArchitectureResponse:
                 description="Cheap model scores every survivor: fit score, matched/missing skills, experience gap.",
                 uses_llm=True,
                 module="agents/analyst.py",
+                node="stage1_analyze",
             ),
             ArchitectureStage(
                 key="stage2",
@@ -237,6 +248,7 @@ def architecture() -> ArchitectureResponse:
                 description="Stronger model re-checks only the top candidates by stage-1 score.",
                 uses_llm=True,
                 module="agents/analyst.py",
+                node="stage2_analyze",
             ),
             ArchitectureStage(
                 key="persist",
@@ -244,6 +256,7 @@ def architecture() -> ArchitectureResponse:
                 description="SQLite. Rejected postings are kept too - they are the RAG archive corpus.",
                 uses_llm=False,
                 module="db.py",
+                node="fetch_persist_filter",
             ),
         ],
         agents=[
@@ -276,21 +289,31 @@ def architecture() -> ArchitectureResponse:
         edges=[
             ArchitectureEdge(source="discovery", target="normalize", label="raw postings"),
             ArchitectureEdge(source="normalize", target="filter", label="JobPosting"),
-            ArchitectureEdge(source="filter", target="rank", label="survivors"),
-            ArchitectureEdge(source="rank", target="stage1", label="top candidates"),
+            ArchitectureEdge(source="filter", target="stage1", label="survivors"),
             ArchitectureEdge(source="stage1", target="stage2", label="top N by fit score"),
             ArchitectureEdge(source="stage1", target="persist", label="verdicts"),
             ArchitectureEdge(source="stage2", target="persist", label="verdicts"),
             ArchitectureEdge(source="filter", target="persist", label="rejected (RAG corpus)"),
         ],
         principles=[
-            "Cheap filters first. LLM calls happen on ~30 jobs a night, not 3000 - this is what keeps "
-            "the system inside free-tier quotas.",
+            f"Cheap filters first. LLM calls happen on the {survivors} postings that survive rule "
+            f"filtering, not the {total:,} fetched - this is what keeps the system inside free-tier quotas.",
             "The system finds and ranks; the human applies. Nothing auto-applies, ever.",
             "Cache on what determined the output. Analyst verdicts are keyed on a hash of model + prompt "
             "+ resume + requirements, so any change to those invalidates exactly the affected entries.",
             "An unscored job is not a zero. When the Analyst has no concrete requirements to compare "
             "against, it says so rather than inventing a number.",
+            "Measured, then removed. Embedding similarity was built, evaluated against the hand-labeled "
+            "set, found to rank at chance, and taken out of the live path - it is kept only as the "
+            "evaluation baseline.",
+        ],
+        orchestrator_nodes=["fetch_persist_filter", "stage1_analyze", "stage2_analyze"],
+        not_in_pipeline=[
+            "Embedding rank (ranking.py) - measured at or below random on the label set, so it does not "
+            "pre-select jobs for the LLM. Still runs as the evaluation baseline and behind "
+            "pipeline.py --ranked.",
+            "Scout (agents/scout.py) - on demand, when a new company is added. Not part of a nightly run.",
+            "Coach (agents/coach.py) - weekly RAG over the archive, triggered from the Career Coach page.",
         ],
     )
 

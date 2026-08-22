@@ -3,6 +3,7 @@ import {
   Activity,
   Boxes,
   ClipboardList,
+  Filter,
   FileText,
   FlaskConical,
   GaugeCircle,
@@ -28,6 +29,7 @@ interface NavItem {
 const USER_NAV: NavItem[] = [
   { to: "/", label: "Home", icon: Home },
   { to: "/jobs", label: "Jobs", icon: Boxes },
+  { to: "/rejected", label: "Rejected", icon: Filter },
   { to: "/mission-control", label: "Mission Control", icon: Activity },
   { to: "/resume", label: "Resume", icon: FileText },
   { to: "/applications", label: "Applications", icon: ClipboardList },

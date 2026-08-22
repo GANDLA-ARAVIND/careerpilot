@@ -40,6 +40,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Applications
+         * @description Everything applied to, newest first, independent of filter state.
+         *
+         *     Queried straight off job_postings rather than through /api/jobs, which
+         *     returns only current rule-filter survivors. Deriving the application
+         *     record from the survivor list meant a job could vanish from your own
+         *     history because a filter changed weeks later - the record of having
+         *     applied is not contingent on today's configuration.
+         *
+         *     Included when applied_at is set OR the status is still "applied": the
+         *     second clause catches rows marked applied before applied_at existed as
+         *     a column. A row marked "rejected" that was never applied to is excluded
+         *     - that is an outcome you never had, not a lost application.
+         *
+         *     Ordered by applied_at descending with the undated rows last, since
+         *     there is no real date to sort them by.
+         */
+        get: operations["list_applications_api_applications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/rejected": {
         parameters: {
             query?: never;
@@ -434,9 +468,16 @@ export interface paths {
         /**
          * Architecture
          * @description A structured description of the pipeline, for the frontend to render
-         *     as a diagram. Static by nature - this describes the system's design, not
-         *     its runtime state, and hardcoding it here rather than in the React app
-         *     keeps one source of truth for what the pipeline actually is.
+         *     as a diagram. The shape lives here rather than in the React app so there
+         *     is one source of truth for what the pipeline actually is.
+         *
+         *     Mostly static, with the funnel figures counted live - see below. Two
+         *     accuracy failures this endpoint previously had, both worth naming since
+         *     this is the page shown to people evaluating the work: it listed an
+         *     "Embedding rank" stage between filter and stage 1 that had been removed
+         *     from the live path (measured at random on the label set), and a
+         *     principle quoting "~30 jobs a night" long after the real survivor count
+         *     had moved. Anything countable here is now counted.
          */
         get: operations["architecture_api_meta_architecture_get"];
         put?: never;
@@ -570,6 +611,56 @@ export interface components {
             /** Notes */
             notes?: string[];
         };
+        /**
+         * AppliedJobSummary
+         * @description One job you applied to.
+         *
+         *     Deliberately NOT derived from /api/jobs. That endpoint returns current
+         *     rule-filter survivors, so a job applied to that later fails a filter
+         *     silently disappeared from the application record - and filters do
+         *     change (a title-experience rule added later rejected 34 postings in one
+         *     pass). Application history is a record of what you did; it must not be
+         *     contingent on today's filter configuration.
+         *
+         *     applied_at is nullable: two rows were marked applied before the column
+         *     existed, and inventing a date for them would be worse than showing none.
+         */
+        AppliedJobSummary: {
+            /** Content Hash */
+            content_hash: string;
+            /** Company */
+            company: string;
+            /** Title */
+            title: string;
+            /** Location */
+            location?: string | null;
+            /** Url */
+            url: string;
+            /** Application Status */
+            application_status: string;
+            /** Applied At */
+            applied_at?: string | null;
+            /**
+             * Still A Survivor
+             * @default true
+             */
+            still_a_survivor: boolean;
+        };
+        /** AppliedJobsResponse */
+        AppliedJobsResponse: {
+            /** Items */
+            items?: components["schemas"]["AppliedJobSummary"][];
+            /**
+             * Dated Count
+             * @default 0
+             */
+            dated_count: number;
+            /**
+             * Undated Count
+             * @default 0
+             */
+            undated_count: number;
+        };
         /** ArchitectureAgent */
         ArchitectureAgent: {
             /** Name */
@@ -606,8 +697,18 @@ export interface components {
             edges: components["schemas"]["ArchitectureEdge"][];
             /** Principles */
             principles: string[];
+            /** Orchestrator Nodes */
+            orchestrator_nodes?: string[];
+            /** Not In Pipeline */
+            not_in_pipeline?: string[];
         };
-        /** ArchitectureStage */
+        /**
+         * ArchitectureStage
+         * @description One conceptual step. `node` names the LangGraph node it actually runs
+         *     inside - the orchestrator has only three, and fetch/persist/filter are
+         *     deliberately bundled into one (see orchestrator.py's module docstring),
+         *     so a stage list alone would misrepresent the real graph.
+         */
         ArchitectureStage: {
             /** Key */
             key: string;
@@ -619,6 +720,8 @@ export interface components {
             uses_llm: boolean;
             /** Module */
             module: string;
+            /** Node */
+            node: string;
         };
         /** AskRequest */
         AskRequest: {
@@ -1428,6 +1531,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_applications_api_applications_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedJobsResponse"];
                 };
             };
         };

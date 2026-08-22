@@ -2641,3 +2641,69 @@ default would have left local runs on the old list while the GitHub Actions runn
 has no `preferences.json` unless the optional `PREFERENCES_JSON` secret is set - used the new
 one, filtering differently in the two places with nothing to indicate it. Both were updated
 and asserted equal.
+
+## Three UI fixes: architecture accuracy, application history, and a rejected browser
+
+### 1. The Architecture page described a stage that does not run
+
+It listed "rank - Embedding rank" between filter and stage 1, with edges `filter -> rank ->
+stage1`. Embeddings were measured at or below random on the label set and removed from the
+live path; the orchestrator has three nodes and none of them is rank. This was in Recruiter
+Mode - the page whose entire purpose is describing the system accurately, shown to people
+evaluating the work.
+
+Fixed by removing the stage and its edges, and by making the graph impossible to misread:
+`ArchitectureStage` gained a `node` field naming the LangGraph node each conceptual step
+actually runs inside, and the response gained `orchestrator_nodes` listing the real three.
+Fetch, normalize, filter and persist all map to `fetch_persist_filter` - they are bundled
+into one node deliberately, so a flat stage list on its own misdescribes the graph.
+
+A new `not_in_pipeline` field states what is deliberately absent **with the reason**:
+embedding rank (measured at chance, kept only as the evaluation baseline), Scout (on demand)
+and Coach (weekly). Omitting removed work entirely is exactly how the phantom stage survived
+so long; naming it as removed is both more honest and, for this audience, a better story than
+silence.
+
+**The stale number is now uncountable-by-hand.** The principle read "LLM calls happen on ~30
+jobs a night" when the real figure was 86. It now counts live from a filter pass:
+*"...happen on the 89 postings that survive rule filtering, not the 12,385 fetched"*. A
+hardcoded figure on this page had already gone stale once; the fix is not a better constant.
+
+### 2. Application history no longer depends on filter state
+
+`ApplicationsPage` derived from `/api/jobs`, which returns only current rule-filter
+survivors. A job applied to that later failed a filter silently disappeared from the record -
+and filters do change: the title-experience rule added earlier this session rejected 34
+postings in one pass. The record of having applied is not contingent on today's
+configuration.
+
+New `GET /api/applications` queries `job_postings` directly on
+`applied_at IS NOT NULL OR application_status = 'applied'`. The second clause catches rows
+marked applied before `applied_at` existed as a column; a row marked "rejected" that was
+never applied to is excluded, since that is an outcome you never had. Ordered newest first
+with undated rows last.
+
+Each item carries `still_a_survivor`, which is **informational only and never filters**: a
+job that would no longer pass is still listed, badged "no longer passes current filters".
+The regression test asserts exactly that - a job retitled to fail both the seniority and
+title-experience rules stays in `/api/applications` while correctly vanishing from
+`/api/jobs`.
+
+### 3. A rejected-postings browser
+
+`GET /api/jobs/rejected` had existed, fully paginated with rule filtering, and nothing called
+it. 12,296 rejected postings were visible only as a total on the Home page - so every filter
+change this session needed its before/after sample produced by hand from a throwaway script.
+
+`RejectedPage` renders rule chips (from the unfiltered set, so they do not collapse when one
+is selected), a 50-row page with the real total stated, and prev/next. Deliberately paginated
+rather than attempting twelve thousand rows, and it says plainly that rejected postings are
+kept rather than deleted because they are the RAG corpus.
+
+**A tooling note worth recording: `tsc --noEmit` passed on code the production build
+rejected.** Two `ErrorState` type errors (a `useState<unknown>` that should have been
+`useState<string>`) surfaced only under `npm run build`. Running the build, not just the type
+check, is what catches this - relevant to anyone verifying a frontend change here.
+
+Evaluation staleness (snapshot from 2026-08-06, n=34, predating the stage-2 model swap) was
+left alone on purpose: regenerating it needs a full stage-2 pass and Gemini quota.

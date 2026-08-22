@@ -74,6 +74,39 @@ class StatusUpdateResponse(BaseModel):
     applied_at: Optional[datetime] = None
 
 
+class AppliedJobSummary(BaseModel):
+    """One job you applied to.
+
+    Deliberately NOT derived from /api/jobs. That endpoint returns current
+    rule-filter survivors, so a job applied to that later fails a filter
+    silently disappeared from the application record - and filters do
+    change (a title-experience rule added later rejected 34 postings in one
+    pass). Application history is a record of what you did; it must not be
+    contingent on today's filter configuration.
+
+    applied_at is nullable: two rows were marked applied before the column
+    existed, and inventing a date for them would be worse than showing none.
+    """
+
+    content_hash: str
+    company: str
+    title: str
+    location: Optional[str] = None
+    url: str
+    application_status: str
+    applied_at: Optional[datetime] = None
+    # Whether this job still passes the current rule filters. Purely
+    # informational - it never affects whether the job is listed - but a
+    # posting that would no longer survive is worth seeing as such.
+    still_a_survivor: bool = True
+
+
+class AppliedJobsResponse(BaseModel):
+    items: list[AppliedJobSummary] = Field(default_factory=list)
+    dated_count: int = 0
+    undated_count: int = 0
+
+
 class RejectedJob(BaseModel):
     company: str
     title: str

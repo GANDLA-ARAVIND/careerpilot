@@ -55,6 +55,14 @@ export function ArchitecturePage() {
                           {stage.module}
                         </code>
                       </div>
+                      {/* Which LangGraph node this conceptual step actually runs
+                          inside. The orchestrator has three; fetch/persist/filter
+                          are bundled into one on purpose, so a flat stage list
+                          alone would misdescribe the real graph. */}
+                      <div className="mt-1 flex items-center gap-1.5">
+                        <span className="text-[0.6rem] uppercase tracking-wide text-muted-foreground">node</span>
+                        <code className="rounded bg-muted/60 px-1.5 py-0.5 text-[0.65rem]">{stage.node}</code>
+                      </div>
                       <p className="mt-1.5 text-xs text-muted-foreground">{stage.description}</p>
                     </div>
                     {i < data.stages.length - 1 && (
@@ -114,6 +122,27 @@ export function ArchitecturePage() {
                   {data.principles.map((p) => (
                     <li key={p} className="text-xs leading-relaxed text-muted-foreground">
                       {p}
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+
+            {/* Stated explicitly rather than left to inference. This page
+                previously listed an embedding-rank stage that had been
+                measured at chance and removed from the live path - naming
+                what is deliberately absent, with the reason, is what stops
+                that happening silently again. */}
+            <Card className="shadow-sm">
+              <CardContent className="px-4 py-3.5">
+                <h2 className="mb-1 text-sm font-semibold">Deliberately not in the nightly pipeline</h2>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Built, measured, and kept out — with the reason.
+                </p>
+                <ul className="space-y-2">
+                  {(data.not_in_pipeline ?? []).map((x) => (
+                    <li key={x} className="text-xs leading-relaxed text-muted-foreground">
+                      {x}
                     </li>
                   ))}
                 </ul>

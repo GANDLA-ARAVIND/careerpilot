@@ -13,6 +13,9 @@ export type JobSummary = components["schemas"]["JobSummary"]
 export type JobDetail = components["schemas"]["JobDetail"]
 export type StatsResponse = components["schemas"]["StatsResponse"]
 export type RejectedPage = components["schemas"]["RejectedPage"]
+export type RejectedJob = components["schemas"]["RejectedJob"]
+export type AppliedJobsResponse = components["schemas"]["AppliedJobsResponse"]
+export type AppliedJobSummary = components["schemas"]["AppliedJobSummary"]
 export type StatusUpdateResponse = components["schemas"]["StatusUpdateResponse"]
 export type RunStatus = components["schemas"]["RunStatus"]
 export type RunEvent = components["schemas"]["RunEvent"]
@@ -115,6 +118,10 @@ export const api = {
       return request<RejectedPage>(`/api/jobs/rejected${qs ? `?${qs}` : ""}`)
     },
   },
+  // Application history, queried on applied_at rather than derived from
+  // jobs.list() - that returns only current filter survivors, so a job
+  // applied to that later fails a filter would drop out of your own record.
+  applications: () => request<AppliedJobsResponse>("/api/applications"),
   stats: () => request<StatsResponse>("/api/stats"),
   run: {
     /**

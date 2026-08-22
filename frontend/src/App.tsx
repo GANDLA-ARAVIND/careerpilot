@@ -9,6 +9,7 @@ import { CoachPage } from "@/pages/CoachPage"
 import { EvaluationPage } from "@/pages/EvaluationPage"
 import { HomePage } from "@/pages/HomePage"
 import { JobsPage } from "@/pages/JobsPage"
+import { RejectedPage } from "@/pages/RejectedPage"
 import { MissionControlPage } from "@/pages/MissionControlPage"
 import { ResumePage } from "@/pages/ResumePage"
 import { SettingsPage } from "@/pages/SettingsPage"
@@ -19,6 +20,7 @@ export default function App() {
       <Route element={<AppShell />}>
         <Route index element={<HomePage />} />
         <Route path="jobs" element={<JobsPage />} />
+        <Route path="rejected" element={<RejectedPage />} />
 
         <Route path="mission-control" element={<MissionControlPage />} />
         <Route path="resume" element={<ResumePage />} />

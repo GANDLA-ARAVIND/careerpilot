@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from config import GEMINI_MODEL_STAGE1, GEMINI_MODEL_STAGE2
 from tests.conftest import add_analyst_result
 
@@ -415,3 +417,87 @@ def test_an_unscored_job_is_never_flagged_as_zero_fit(client, seeded, temp_env):
     assert body[0]["is_unscored"] is True
     assert body[0]["fit_score"] is None, "an unscored job must not expose a fabricated score"
     assert body[0]["is_zero_fit"] is False, "null is not zero - this job must stay visible"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/applications - the record of what you applied to, queried on
+# applied_at directly. Deriving it from /api/jobs meant a job could vanish
+# from your own history because a filter changed later.
+# ---------------------------------------------------------------------------
+
+
+def test_applications_includes_a_job_that_no_longer_passes_filters(client, seeded, temp_env):
+    """The whole point. A job marked applied, whose title would now be
+    rejected by a rule, must still appear - the record is of what you did,
+    not of what currently survives."""
+    from sqlalchemy.orm import Session
+
+    from db import JobPostingRow
+
+    with Session(temp_env["engine"]) as session:
+        row = session.get(JobPostingRow, seeded["survivor_a"].content_hash)
+        row.title = "Senior Staff Engineer | 12+ Yrs"   # would fail seniority AND experience_in_title
+        row.application_status = "applied"
+        row.applied_at = datetime(2026, 8, 1, 9, 0)
+        session.commit()
+
+    body = client.get("/api/applications").json()
+
+    assert [i["company"] for i in body["items"]] == ["Acme Corp"]
+    assert body["items"][0]["still_a_survivor"] is False, "flagged, but still listed"
+    assert client.get("/api/jobs").json() == [], "and it is correctly absent from the survivor list"
+
+
+def test_applications_includes_undated_rows_marked_applied(client, seeded, temp_env):
+    """Rows marked applied before applied_at existed have no date. Listed
+    with a null date rather than dropped or given an invented one."""
+    from sqlalchemy.orm import Session
+
+    from db import JobPostingRow
+
+    with Session(temp_env["engine"]) as session:
+        row = session.get(JobPostingRow, seeded["survivor_a"].content_hash)
+        row.application_status = "applied"
+        row.applied_at = None
+        session.commit()
+
+    body = client.get("/api/applications").json()
+
+    assert body["dated_count"] == 0
+    assert body["undated_count"] == 1
+    assert body["items"][0]["applied_at"] is None
+
+
+def test_applications_excludes_a_job_never_applied_to(client, seeded, temp_env):
+    """A job marked rejected without ever being applied to is not an
+    application - that is an outcome you never had."""
+    from sqlalchemy.orm import Session
+
+    from db import JobPostingRow
+
+    with Session(temp_env["engine"]) as session:
+        row = session.get(JobPostingRow, seeded["survivor_a"].content_hash)
+        row.application_status = "rejected"
+        row.applied_at = None
+        session.commit()
+
+    assert client.get("/api/applications").json()["items"] == []
+
+
+def test_applications_orders_dated_first_newest_first(client, seeded, temp_env):
+    from sqlalchemy.orm import Session
+
+    from db import JobPostingRow
+
+    with Session(temp_env["engine"]) as session:
+        a = session.get(JobPostingRow, seeded["survivor_a"].content_hash)
+        a.application_status, a.applied_at = "applied", datetime(2026, 8, 1)
+        b = session.get(JobPostingRow, seeded["survivor_b"].content_hash)
+        b.application_status, b.applied_at = "applied", datetime(2026, 8, 15)
+        c = session.get(JobPostingRow, seeded["rejected"].content_hash)
+        c.application_status, c.applied_at = "applied", None
+        session.commit()
+
+    items = client.get("/api/applications").json()["items"]
+
+    assert [i["company"] for i in items] == ["Globex", "Acme Corp", "Initech"]
